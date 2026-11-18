@@ -1,5 +1,7 @@
 import { html, raw, api, ago, dur, pct, clock, firstLine, pill, toast, openDrawer, closeDrawer, empty, errorBox, panel, markdown } from './lib.js';
 import { renderDag } from './dag.js';
+import { icon, NAV_ICON, AGENT_ICON } from './icons.js';
+import { donut, columns, hbars, meterRow } from './charts.js';
 
 // ------------------------------------------------------------------ state
 const state = {
@@ -290,20 +292,23 @@ function currentStepName(run) {
   const s = run.steps?.find((x) => x.kind === 'task' && x.status === 'running');
   return s ? `${s.name}…` : 'Queued';
 }
+const OUTCOME_ICON = { 'Ready to release': 'check', 'Needs attention': 'alert', Blocked: 'ban', 'Testing…': 'spinner', 'Waiting for your approval': 'user', 'Run crashed': 'crash', Cancelled: 'minus', 'Not tested yet': 'dashed', Finished: 'check' };
+function outcomePill(o, { lg = false } = {}) {
+  return html`<span class="pill has-ic ${o.tone}${lg ? ' lg' : ''}${o.live ? ' live' : ''}">${icon(OUTCOME_ICON[o.label] || 'dashed', { size: lg ? 15 : 13, cls: o.live ? 'spin' : '' })}${o.label}</span>`;
+}
 function outcomeBadge(run) {
-  const o = outcome(run);
-  return html`<span class="pill ${o.tone}${o.live ? ' running' : ''}">${o.label}</span>`;
+  return outcomePill(outcome(run));
 }
 
 /** The workflow as seven stages a person recognises. */
 const STAGES = [
-  ['Ticket', ['fetch-ticket']],
-  ['Analyze', ['analyze-requirements']],
-  ['Write tests', ['generate-tests']],
-  ['Run tests', ['check-environment', 'execute-tests']],
-  ['Diagnose', ['analyze-failures']],
-  ['Report', ['qa-report']],
-  ['File bugs', ['file-defects']],
+  ['Ticket', ['fetch-ticket'], 'ticket'],
+  ['Analyze', ['analyze-requirements'], 'analyze'],
+  ['Write tests', ['generate-tests'], 'code'],
+  ['Run tests', ['check-environment', 'execute-tests'], 'play'],
+  ['Diagnose', ['analyze-failures'], 'pulse'],
+  ['Report', ['qa-report'], 'chart'],
+  ['File bugs', ['file-defects'], 'bug'],
 ];
 const STAGE_TEXT = { done: 'done', running: 'in progress', waiting: 'waiting for you', failed: 'failed', skipped: 'not needed', pending: 'not started' };
 function stageState(run, ids) {
@@ -320,10 +325,10 @@ function stageState(run, ids) {
   return { state: 'pending', detail };
 }
 function stageStrip(run, { labels = false } = {}) {
-  return html`<ol class="stages${labels ? ' labelled' : ''}">${STAGES.map(([name, ids]) => {
+  return html`<ol class="stages${labels ? ' labelled' : ''}">${STAGES.map(([name, ids, ic]) => {
     const { state, detail } = stageState(run, ids);
     const tip = `${name}: ${STAGE_TEXT[state]}${detail ? ` — ${detail}` : ''}`;
-    return html`<li class="stage ${state}" title="${tip}"><span class="seg"></span>${labels ? html`<span class="stage-name">${name}</span>` : html`<span class="sr">${tip}</span>`}</li>`;
+    return html`<li class="stage ${state}" title="${tip}"><span class="seg"></span>${labels ? html`<span class="stage-name">${icon(ic, { size: 13 })}${name}</span>` : html`<span class="sr">${tip}</span>`}</li>`;
   })}</ol>`;
 }
 function stageLegend() {
@@ -331,8 +336,8 @@ function stageLegend() {
 }
 
 async function renderOverview() {
-  const [ov, agents, tickets, runs, approvals] = await Promise.all([api('/overview'), api('/agents'), api('/jira/tickets'), api('/runs?limit=100'), api('/approvals?status=pending')]);
-  setTopbar(html`<button class="btn primary" data-action="run-batch">Test all “${ov.jiraMonitor.triggerStatus}” tickets</button>`);
+  const [ov, agents, tickets, runs, approvals, executions] = await Promise.all([api('/overview'), api('/agents'), api('/jira/tickets'), api('/runs?limit=100'), api('/approvals?status=pending'), api('/executions')]);
+  setTopbar(html`<button class="btn primary" data-action="run-batch">${icon('play', { size: 14 })}Test all “${ov.jiraMonitor.triggerStatus}” tickets</button>`);
 
   // Latest run per ticket (runs are newest first).
   const latest = new Map();
@@ -340,13 +345,13 @@ async function renderOverview() {
   const stories = tickets.filter((t) => t.type !== 'Bug');
 
   const todo = [];
-  for (const a of approvals) todo.push(html`<li class="todo warn"><div><b>${a.title}</b><div class="small muted">${firstLine(a.summary)}</div></div><a class="btn sm primary" href="#/approvals">Review</a></li>`);
+  for (const a of approvals) todo.push(html`<li class="todo warn"><span class="todo-ic">${icon('user', { size: 16 })}</span><div><b>${a.title}</b><div class="small muted">${firstLine(a.summary)}</div></div><a class="btn sm primary" href="#/approvals">Review</a></li>`);
   for (const t of stories) {
     const r = latest.get(t.key);
     if (!r || r.status === 'waiting_approval') continue;
     const o = outcome(r);
     if (o.tone !== 'err' && o.tone !== 'warn') continue;
-    todo.push(html`<li class="todo ${o.tone}"><div><b><span class="mono">${t.key}</span> ${o.label.toLowerCase()}</b><div class="small muted">${o.reason}</div></div><a class="btn sm" href="#/runs/${r.id}">Open</a></li>`);
+    todo.push(html`<li class="todo ${o.tone}"><span class="todo-ic">${icon(OUTCOME_ICON[o.label], { size: 16 })}</span><div><b><span class="mono">${t.key}</span> ${o.label.toLowerCase()}</b><div class="small muted">${o.reason}</div></div><a class="btn sm" href="#/runs/${r.id}">Open</a></li>`);
   }
 
   const counts = stories.reduce((m, t) => {
@@ -362,34 +367,59 @@ async function renderOverview() {
         return html`<div class="board-row">
           <div class="board-ticket"><button class="link mono" data-action="ticket-detail" data-key="${t.key}">${t.key}</button><span class="small muted clamp" title="${t.summary}">${t.summary}</span></div>
           ${stageStrip(r)}
-          <div class="board-outcome"><span class="pill ${o.tone}${o.live ? ' running' : ''}">${o.label}</span>${o.reason ? html`<span class="small muted clamp" title="${o.reason}">${o.reason}</span>` : ''}</div>
+          <div class="board-outcome">${outcomePill(o)}${o.reason ? html`<span class="small muted clamp" title="${o.reason}">${o.reason}</span>` : ''}</div>
           <div class="board-act">${r ? html`<a class="btn sm" href="#/runs/${r.id}">Details</a>` : html`<button class="btn sm primary" data-action="run-ticket" data-key="${t.key}">Run QA</button>`}</div>
         </div>`;
       })}</div>`
     : empty('No tickets yet. Connect Jira or use the mock fixtures.');
 
   const integ = ov.integrations;
+  const order = ['Ready to release', 'Needs attention', 'Blocked', 'Waiting for your approval', 'Testing…', 'Run crashed', 'Cancelled', 'Not tested yet'];
+  const toneOf = { 'Ready to release': 'ok', 'Needs attention': 'warn', Blocked: 'err', 'Waiting for your approval': 'purple', 'Testing…': 'info', 'Run crashed': 'err', Cancelled: 'muted', 'Not tested yet': 'muted' };
+  const segments = order.filter((l) => counts[l]).map((l) => ({ label: l.toLowerCase(), value: counts[l], tone: toneOf[l] }));
+  const recent = executions.slice(0, 14).reverse();
+  const health = html`<section class="panel">
+    <div class="panel-head"><div><h2>QA health</h2><div class="sub">Where every ticket stands, and how the latest test runs went</div></div></div>
+    <div class="panel-body health">
+      <figure class="chart"><figcaption class="small muted">Tickets by outcome</figcaption>${segments.length ? donut(segments, { caption: 'tickets' }) : empty('No tickets yet.')}</figure>
+      <figure class="chart grow"><figcaption class="small muted">Tests per run, last ${recent.length} (oldest left)</figcaption>
+        ${recent.length ? columns(recent.map((e) => ({ label: e.ticketKey.replace(/^[A-Z]+-/, ''), title: `${e.ticketKey} · ${ago(e.finishedAt)}`, href: `#/runs/${e.runId}`, parts: [{ value: e.summary.passed, tone: 'ok', label: 'passed' }, { value: e.summary.failed, tone: 'err', label: 'failed' }, { value: e.summary.skipped, tone: 'muted', label: 'skipped' }] }))) : empty('No test runs yet.')}
+        <div class="legend small"><span><i class="sw tone-ok"></i>passed</span><span><i class="sw tone-err"></i>failed</span><span><i class="sw tone-muted"></i>skipped</span></div>
+      </figure>
+    </div>
+  </section>`;
+  const conns = [
+    ['ticket', 'Jira', integ.jira, integ.jira !== 'off'],
+    ['cpu', 'LLM', ov.llm.available ? ov.llm.model || ov.llm.provider : 'off (rule-based)', ov.llm.available],
+    ['code', 'Code', integ.codeContext, true],
+    ['branch', 'CI', integ.ci, true],
+    ['flask', 'Test runner', integ.playwright, true],
+    ['plug', 'MCP servers', String(integ.mcpServers), integ.mcpServers > 0],
+    ['refresh', 'Jira polling', ov.jiraMonitor.enabled ? `every ${dur(ov.jiraMonitor.intervalMs)}` : 'off', ov.jiraMonitor.enabled],
+  ];
   return html`
     <section class="panel attention">
       <div class="panel-head"><h2>${todo.length ? `Needs your action (${todo.length})` : 'Nothing needs you right now'}</h2></div>
       ${todo.length ? html`<ul class="todos">${todo}</ul>` : html`<div class="panel-body small muted">No pending approvals and no blocked tickets. Start a run from the board below.</div>`}
     </section>
-    ${panel('Tickets through the QA pipeline', html`<div class="board-head small muted"><span>Ticket</span><span class="stage-heads">${STAGES.map(([n]) => html`<span>${n}</span>`)}</span><span>Outcome</span><span></span></div>${board}<div class="panel-foot">${stageLegend()}</div>`, { flush: true, sub: countLine || 'Each bar is one stage of the latest run. Hover a bar for details.' })}
+    ${health}
+    ${panel('Tickets through the QA pipeline', html`<div class="board-head small muted"><span>Ticket</span><span class="stage-heads">${STAGES.map(([n, , ic]) => html`<span title="${n}">${icon(ic, { size: 14 })}<span class="stage-head-name">${n}</span></span>`)}</span><span>Outcome</span><span></span></div>${board}<div class="panel-foot">${stageLegend()}</div>`, { flush: true, sub: countLine || 'Each bar is one stage of the latest run. Hover a bar for details.' })}
     <div class="grid two">
       ${panel('Agents', agentList(agents), { flush: true, sub: `${agents.filter((a) => a.status === 'busy').length} working · ${agents.length} total` })}
       ${panel('Activity', feedList(), { flush: true, sub: 'Live, newest first' })}
     </div>
-    <p class="small muted connections">Connections: Jira <b>${integ.jira}</b> · LLM <b>${ov.llm.available ? ov.llm.model || ov.llm.provider : 'off (rule-based agents)'}</b> · Code <b>${integ.codeContext}</b> · CI <b>${integ.ci}</b> · Test runner <b>${integ.playwright}</b> · MCP servers <b>${integ.mcpServers}</b> · Jira polling <b>${ov.jiraMonitor.enabled ? `every ${dur(ov.jiraMonitor.intervalMs)}` : 'off'}</b></p>`;
+    <ul class="connections" aria-label="Connections">${conns.map(([ic, name, val, on]) => html`<li class="${on ? 'on' : 'off'}">${icon(ic, { size: 14 })}<span class="muted">${name}</span><b>${val}</b></li>`)}</ul>`;
 }
 
 function agentList(agents) {
+  const most = Math.max(1, ...agents.map((a) => a.metrics.invocations));
   return html`<ul class="agents">${agents.map((a) => {
     const m = a.metrics;
     const doing = a.currentTask ? `Working: ${a.currentTask.action}${a.currentTask.runId ? '' : ' (ad hoc)'}` : a.queued ? `${a.queued} queued` : a.status === 'error' ? 'Last task failed' : m.lastRunAt ? `Idle · last task ${ago(m.lastRunAt)}` : 'Idle · not used yet';
     return html`<li class="agent-row ${a.status}" title="${a.description}">
-      <span class="dot ${a.status === 'busy' ? 'running' : a.status === 'error' ? 'failed' : 'idle'}" aria-hidden="true"></span>
+      <span class="agent-ic">${icon(AGENT_ICON[a.id] || 'cpu', { size: 16 })}<span class="dot ${a.status === 'busy' ? 'running' : a.status === 'error' ? 'failed' : 'idle'}" aria-hidden="true"></span></span>
       <div><div class="name">${a.name.replace(/ Agent$/, '')}</div><div class="small muted">${doing}</div></div>
-      <div class="small muted num">${m.invocations} tasks · ${pct(m.successRate)} ok</div>
+      <div class="agent-load"><span class="small muted num">${m.invocations} tasks · ${pct(m.successRate)} ok</span><span class="hb-track" aria-hidden="true"><span class="tone-bg-${m.failed ? 'warn' : 'info'}" style="width:${(m.invocations / most) * 100}%"></span></span></div>
     </li>`;
   })}</ul>`;
 }
@@ -412,10 +442,19 @@ function describeEvent(ev) {
   return null;
 }
 
+function feedIcon(ev, d) {
+  if (ev.type.startsWith('approval.')) return 'user';
+  if (ev.type === 'jira.change') return 'ticket';
+  if (ev.type === 'run.started') return 'play';
+  if (d.tone === 'err') return 'crash';
+  if (d.tone === 'warn') return 'alert';
+  if (d.tone === 'ok') return 'check';
+  return 'pulse';
+}
 function feedList() {
   const items = state.feed.map((ev) => [ev, describeEvent(ev)]).filter(([, d]) => d).slice(0, 40);
   if (!items.length) return empty('Quiet for now. Activity appears here as agents work.');
-  return html`<ul class="feed" data-keep-scroll="feed">${items.map(([ev, d]) => html`<li class="feed-item ${d.tone}"><span class="t">${clock(ev.ts)}</span><span>${d.text}</span></li>`)}</ul>`;
+  return html`<ul class="feed" data-keep-scroll="feed">${items.map(([ev, d]) => html`<li class="feed-item ${d.tone}"><span class="t">${clock(ev.ts)}</span>${icon(feedIcon(ev, d), { size: 14 })}<span>${d.text}</span></li>`)}</ul>`;
 }
 
 function runsTable(runs) {
@@ -480,7 +519,7 @@ async function renderRunDetail(id) {
   const o = outcome(run);
   const header = html`<section class="panel">
     <div class="panel-body stack">
-      <div class="row between"><div class="row"><span class="pill lg ${o.tone}${o.live ? ' running' : ''}">${o.label}</span><b>${run.label}</b></div>
+      <div class="row between"><div class="row">${outcomePill(o, { lg: true })}<b>${run.label}</b></div>
         <div class="row small muted"><span>trigger: ${run.trigger}</span><span>started ${ago(run.startedAt || run.createdAt)}</span><span>took ${dur(run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null))}</span></div></div>
       ${o.reason ? html`<p class="reason">${o.reason}</p>` : ''}
       ${run.error ? html`<div class="error-box">${run.error.stepId ? `${run.error.stepId}: ` : ''}${run.error.message}</div>` : ''}
@@ -541,7 +580,10 @@ async function renderTests() {
   const executions = await api('/executions');
   if (!executions.length) return panel('Executions', empty('No test executions yet.'));
   const total = executions.reduce((a, e) => ({ p: a.p + e.summary.passed, f: a.f + e.summary.failed, s: a.s + e.summary.skipped }), { p: 0, f: 0, s: 0 });
-  return html`<div class="grid kpis">
+  const recent = executions.slice(0, 24).reverse();
+  return html`${panel('Results per execution', html`${columns(recent.map((e) => ({ label: e.ticketKey.replace(/^[A-Z]+-/, ''), title: `${e.ticketKey} · ${ago(e.finishedAt)}`, href: `#/runs/${e.runId}`, parts: [{ value: e.summary.passed, tone: 'ok', label: 'passed' }, { value: e.summary.failed, tone: 'err', label: 'failed' }, { value: e.summary.skipped, tone: 'muted', label: 'skipped' }] })), { height: 150 })}
+      <div class="legend small"><span><i class="sw tone-ok"></i>passed</span><span><i class="sw tone-err"></i>failed</span><span><i class="sw tone-muted"></i>skipped</span></div>`, { sub: `Last ${recent.length} executions, oldest left. Click a column to open its run.` })}
+    <div class="grid kpis">
       <div class="kpi"><div class="label">Executions</div><div class="value">${executions.length}</div></div>
       <div class="kpi ok"><div class="label">Passed</div><div class="value">${total.p}</div></div>
       <div class="kpi ${total.f ? 'err' : ''}"><div class="label">Failed</div><div class="value">${total.f}</div></div>
@@ -595,7 +637,15 @@ async function renderInvestigations() {
         <div class="small muted">${i.ticketKey} · ${ago(i.at)} · <a href="#/runs/${i.runId}">run</a></div>
       </div>`)
     : empty('No failures investigated yet.');
-  return html`${panel('Optimization insights', html`<div class="stack">
+  const CAT = { product_defect: ['product bug', 'err'], automation_issue: ['test needs fixing', 'purple'], environment_issue: ['environment problem', 'warn'], test_data_issue: ['test data problem', 'warn'], unknown: ['unclear cause', 'muted'] };
+  const tally = (key) => Object.entries(items.reduce((m, i) => ({ ...m, [i[key]]: (m[i[key]] || 0) + 1 }), {})).sort((a, b) => b[1] - a[1]);
+  const charts = items.length
+    ? panel('Failures at a glance', html`<div class="health">
+        <figure class="chart grow"><figcaption class="small muted">By cause</figcaption>${hbars(tally('category').map(([k, v]) => ({ label: (CAT[k] || [k])[0], value: v, tone: (CAT[k] || [, 'muted'])[1] })))}</figure>
+        <figure class="chart grow"><figcaption class="small muted">By ticket</figcaption>${hbars(tally('ticketKey').map(([k, v]) => ({ label: k, value: v, tone: 'info' })))}</figure>
+      </div>`, { sub: `${items.length} investigated failures across all runs` })
+    : '';
+  return html`${charts}${panel('Optimization insights', html`<div class="stack">
       <ul>${insights.recommendations.map((r) => html`<li>${r}</li>`)}</ul>
       ${insights.recurringFailures.length ? html`<div class="table-wrap"><table><thead><tr><th>Test</th><th>Category</th><th class="num">Count</th><th>Root cause</th><th>Last seen</th></tr></thead><tbody>${insights.recurringFailures.map((r) => html`<tr><td class="mono">${r.testId}</td><td>${pill(r.category)}</td><td class="num">${r.count}</td><td class="ellipsis" title="${r.rootCause}">${r.rootCause}</td><td class="muted">${ago(r.lastSeen)}</td></tr>`)}</tbody></table></div>` : ''}
       ${insights.flakyTests.length ? html`<div class="small"><b>Flaky tests:</b> ${insights.flakyTests.map((f) => html`<span class="mono">${f.testId}</span> (${f.history.join(' → ')}) `)}</div>` : ''}
@@ -652,17 +702,26 @@ async function renderReports(params) {
   if (!id) return panel('Reports', empty('No QA reports yet.'));
   const report = await api(`/runs/${id}/report`);
   const m = report.metrics;
-  return html`<div class="grid kpis">
-      <div class="kpi ${report.verdict === 'ready_for_release' ? 'ok' : report.verdict === 'blocked' ? 'err' : 'warn'}"><div class="label">Verdict</div><div class="value" style="font-size:17px">${report.verdict.replace(/_/g, ' ')}</div></div>
-      <div class="kpi"><div class="label">Pass rate</div><div class="value">${pct(m.passRate)}</div><div class="hint">${m.passed} passed · ${m.failed} failed</div></div>
-      <div class="kpi"><div class="label">AC coverage</div><div class="value">${pct(m.acCoverage)}</div><div class="hint">${m.acceptanceCriteria} criteria</div></div>
-      <div class="kpi"><div class="label">Tests generated</div><div class="value">${m.testsGenerated}</div><div class="hint">${m.testsExecuted} executed</div></div>
-      <div class="kpi"><div class="label">Automation gaps</div><div class="value">${report.automationGaps.length}</div></div>
+  const v = VERDICT[report.verdict] || { tone: '', label: report.verdict };
+  const skipped = Math.max(0, (m.testsExecuted || 0) - (m.passed || 0) - (m.failed || 0));
+  const summary = html`<section class="panel">
+    <div class="panel-head"><div class="row">${outcomePill(v, { lg: true })}<b>${report.ticketKey}</b></div><span class="small muted">${ago(report.generatedAt)}</span></div>
+    <div class="panel-body health">
+      <figure class="chart"><figcaption class="small muted">Test results</figcaption>${donut([{ label: 'passed', value: m.passed || 0, tone: 'ok' }, { label: 'failed', value: m.failed || 0, tone: 'err' }, { label: 'skipped', value: skipped, tone: 'muted' }], { caption: 'tests' })}</figure>
+      <figure class="chart grow stack"><figcaption class="small muted">Quality</figcaption>
+        ${meterRow('Pass rate', m.passRate, { tone: m.passRate === 1 ? 'ok' : m.passRate ? 'warn' : 'err', note: `${m.passed} of ${m.testsExecuted} tests` })}
+        ${meterRow('Acceptance-criteria coverage', m.acCoverage, { tone: m.acCoverage === 1 ? 'ok' : 'warn', note: `${m.acceptanceCriteria} criteria` })}
+        ${meterRow('Generated tests executed', m.testsGenerated ? m.testsExecuted / m.testsGenerated : null, { tone: 'info', note: `${m.testsExecuted} of ${m.testsGenerated}` })}
+        <div class="small muted">${report.automationGaps.length ? `${report.automationGaps.length} automation gap(s) listed in the report below.` : 'No automation gaps.'}</div>
+      </figure>
     </div>
+  </section>`;
+  return html`${summary}
     ${panel(`QA report · ${report.ticketKey}`, html`<div class="md">${markdown(report.markdown)}</div>`, { sub: `${report.reportId} · ${ago(report.generatedAt)} · ${report.markdownPath}`, actions: html`<a class="small" href="#/runs/${id}">Open run →</a>` })}`;
 }
 
 // ------------------------------------------------------------------ start
+document.querySelectorAll('#nav a').forEach((a) => a.insertAdjacentHTML('afterbegin', String(icon(NAV_ICON[a.dataset.route] || 'overview'))));
 connectEvents();
 refreshApprovalBadge();
 if (!location.hash) location.hash = '#/overview';
