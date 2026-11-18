@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source srcset="docs/assets/logo-light.png" media="(prefers-color-scheme: dark)">
+    <img src="docs/assets/logo.png" alt="ORCA logo: an orca conducting with a baton" width="140">
+  </picture>
+</p>
+
 # OrcaStrator
 
 An agent orchestrator for software testing.
