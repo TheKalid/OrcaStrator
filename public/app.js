@@ -40,7 +40,7 @@ async function renderRoute({ soft = false } = {}) {
   const route = ROUTES[name];
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === name));
   titleEl.textContent = route.title;
-  document.title = `${route.title} · ORCA Console`;
+  document.title = `${route.title} · OrcaStrator`;
   const seq = ++renderSeq;
   if (!soft) {
     view.innerHTML = String(html`<div class="empty">Loading…</div>`);

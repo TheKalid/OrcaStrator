@@ -1,4 +1,4 @@
-# ORCA user manual
+# OrcaStrator user manual
 
 ORCA is an AI agent orchestrator for software testing. It takes a Jira ticket, works out its acceptance criteria, writes automated tests, runs them with Playwright, analyzes the failures and gives you a QA report with a clear verdict. When an action is sensitive, such as filing defects in Jira, ORCA stops and asks for your approval.
 
@@ -22,7 +22,7 @@ npm install
 npx playwright install chromium-headless-shell
 ```
 
-### Start ORCA
+### Start OrcaStrator
 
 ```bash
 npm start

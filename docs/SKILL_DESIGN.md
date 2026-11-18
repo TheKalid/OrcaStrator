@@ -1,4 +1,4 @@
-# ORCA as a skill: design notes
+# OrcaStrator as a skill: design notes
 
 Status: draft. This records the decisions taken so far for turning ORCA into a skill that any QA engineer can add to their own project. Open questions are listed at the end.
 

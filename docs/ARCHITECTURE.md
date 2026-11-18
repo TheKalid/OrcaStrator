@@ -1,4 +1,4 @@
-# ORCA architecture
+# OrcaStrator architecture
 
 ORCA (Orchestrator for Reasoning, Coordination & Automation) coordinates specialized
 AI agents across the software testing lifecycle. This document describes the MVP
