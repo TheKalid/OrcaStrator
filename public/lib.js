@@ -65,11 +65,17 @@ const STATUS_TONE = {
   waiting_approval: 'warn', pending: 'warn', needs_attention: 'warn', environment_issue: 'warn', test_data_issue: 'warn',
   rejected: 'purple', skipped: '', unknown: '',
 };
+/** Plain-language names for machine statuses. */
+const STATUS_LABEL = {
+  succeeded: 'done', ready_for_release: 'ready to release', needs_attention: 'needs attention', waiting_approval: 'waiting for approval',
+  timedOut: 'timed out', busy: 'working', product_defect: 'product bug', automation_issue: 'test needs fixing',
+  environment_issue: 'environment problem', test_data_issue: 'test data problem', unknown: 'unclear cause',
+};
 export function pill(status, label) {
   if (!status) return html`<span class="pill">—</span>`;
   const tone = STATUS_TONE[status] ?? '';
   const anim = status === 'running' || status === 'busy' ? ' running' : '';
-  return html`<span class="pill ${tone}${anim}">${label || String(status).replace(/_/g, ' ')}</span>`;
+  return html`<span class="pill ${tone}${anim}">${label || STATUS_LABEL[status] || String(status).replace(/_/g, ' ')}</span>`;
 }
 
 // ------------------------------------------------------------ UI pieces
@@ -99,7 +105,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 export const empty = (msg) => html`<div class="empty">${msg}</div>`;
-export const errorBox = (err) => html`<div class="error-box">⚠ ${err.message || err}</div>`;
+export const errorBox = (err) => html`<div class="error-box">${err.message || err}</div>`;
 
 export function panel(title, body, { sub, actions, flush } = {}) {
   return html`<section class="panel">

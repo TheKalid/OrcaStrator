@@ -16,15 +16,15 @@ const topRight = document.getElementById('topbar-right');
 
 // ----------------------------------------------------------------- router
 const ROUTES = {
-  overview: { title: 'Overview', render: renderOverview, live: /^(run\.|step\.|agent\.|approval\.|task\.)/ },
+  overview: { title: 'Overview', render: renderOverview, live: /^(run\.|step\.|agent\.status|approval\.|jira\.change)/ },
   jira: { title: 'Jira tickets', render: renderJira, live: /^(run\.(succeeded|failed|queued|cancelled)|jira\.change)/ },
-  runs: { title: 'Workflows & runs', render: renderRuns, live: /^(run\.|step\.)/ },
+  runs: { title: 'Runs', render: renderRuns, live: /^(run\.|step\.)/ },
   tests: { title: 'Test results', render: renderTests, live: /^run\.(succeeded|failed)/ },
-  deployments: { title: 'Deployments', render: renderDeployments, live: /^run\.(succeeded|failed)/ },
-  investigations: { title: 'Investigations', render: renderInvestigations, live: /^run\.(succeeded|failed)/ },
+  deployments: { title: 'Environments & CI', render: renderDeployments, live: /^run\.(succeeded|failed)/ },
+  investigations: { title: 'Failure analysis', render: renderInvestigations, live: /^run\.(succeeded|failed)/ },
   approvals: { title: 'Approvals', render: renderApprovals, live: /^approval\./ },
   trace: { title: 'Traceability', render: renderTrace, live: /^trace\.updated/ },
-  reports: { title: 'Reports', render: renderReports, live: /^run\.(succeeded|failed)/ },
+  reports: { title: 'QA reports', render: renderReports, live: /^run\.(succeeded|failed)/ },
 };
 
 function parseRoute() {
@@ -127,7 +127,7 @@ function onEvent(ev) {
   if (ev.type !== 'memory.updated' && ev.type !== 'task.started' && ev.type !== 'task.finished') pushFeed(ev);
   if (ev.type.startsWith('approval.')) refreshApprovalBadge();
   if (ev.type === 'approval.requested') toast(`Approval required: ${ev.payload.title}`);
-  if (ev.type === 'run.succeeded' || ev.type === 'run.failed') toast(`${ev.payload.label}: run ${ev.payload.status}`, ev.type === 'run.failed' ? 'err' : 'ok');
+  if (ev.type === 'run.succeeded' || ev.type === 'run.failed') toast(`${ev.payload.label}: QA run ${ev.type === 'run.failed' ? 'crashed' : 'finished'}`, ev.type === 'run.failed' ? 'err' : 'ok');
   const route = ROUTES[name];
   if (route.live?.test(ev.type)) scheduleRefresh();
 }
@@ -259,99 +259,201 @@ const setTopbar = (h) => {
 };
 
 // ------------------------------------------------------------------ views
-async function renderOverview() {
-  const [ov, agents, runs] = await Promise.all([api('/overview'), api('/agents'), api('/runs?limit=8')]);
-  setTopbar(html`<button class="btn primary" data-action="run-batch">Run all “${ov.jiraMonitor.triggerStatus}”</button>`);
-  const v = ov.verdicts || {};
-  const kpis = [
-    ['Total runs', ov.runs.total, `${ov.runs.succeeded} ok · ${ov.runs.failed} failed`],
-    ['Active runs', ov.runs.active, ov.runs.avgDurationMs ? `avg ${dur(ov.runs.avgDurationMs)}` : 'no runs yet', ov.runs.active ? 'warn' : ''],
-    ['Pending approvals', ov.approvalsPending, 'human in the loop', ov.approvalsPending ? 'warn' : ''],
-    ['Ready for release', v.ready_for_release || 0, 'QA verdicts', 'ok'],
-    ['Needs attention', v.needs_attention || 0, 'QA verdicts', v.needs_attention ? 'warn' : ''],
-    ['Blocked', v.blocked || 0, 'QA verdicts', v.blocked ? 'err' : ''],
-  ];
-  const integ = ov.integrations;
-  return html`
-    <div class="grid kpis">${kpis.map(([l, val, hint, tone]) => html`<div class="kpi ${tone || ''}"><div class="label">${l}</div><div class="value">${val}</div><div class="hint">${hint}</div></div>`)}</div>
-    <div class="panel"><div class="panel-body row small">
-      <span class="muted">LLM</span> ${pill(ov.llm.available ? 'connected' : 'idle', `${ov.llm.provider}${ov.llm.model ? ` · ${ov.llm.model}` : ''}`)}
-      <span class="muted">Jira</span> ${pill(integ.jira === 'mock' ? 'idle' : 'connected', integ.jira)}
-      <span class="muted">Code</span> ${pill('idle', integ.codeContext)}
-      <span class="muted">CI</span> ${pill('idle', integ.ci)}
-      <span class="muted">Runner</span> ${pill(integ.playwright === 'playwright' ? 'connected' : 'warn', integ.playwright)}
-      <span class="muted">MCP servers</span> <span class="pill">${integ.mcpServers}</span>
-      <span class="muted">Jira monitor</span> ${pill(ov.jiraMonitor.enabled ? 'connected' : 'idle', ov.jiraMonitor.enabled ? `every ${dur(ov.jiraMonitor.intervalMs)}${ov.jiraMonitor.autoTrigger ? ' · auto-trigger' : ''}` : 'off')}
-    </div></div>
-    ${panel('Agents', html`<div class="grid agents">${agents.map(agentCard)}</div>`, { sub: `${agents.length} registered · live status` })}
-    <div class="grid two">
-      ${panel('Recent runs', runsTable(runs), { flush: true, actions: html`<a class="small" href="#/runs">All runs →</a>` })}
-      ${panel('Live event feed', feedList(), { flush: true, sub: 'orchestrator events via SSE' })}
-    </div>`;
+/** One plain-language outcome per run, so status and verdict never disagree. */
+const VERDICT = {
+  ready_for_release: { tone: 'ok', label: 'Ready to release' },
+  needs_attention: { tone: 'warn', label: 'Needs attention' },
+  blocked: { tone: 'err', label: 'Blocked' },
+};
+function outcome(run) {
+  if (!run) return { tone: '', label: 'Not tested yet', reason: '' };
+  const reason = run.output?.reason || stepSummary(run, 'execute-tests') || stepSummary(run, 'analyze-requirements') || '';
+  switch (run.status) {
+    case 'queued':
+    case 'running':
+      return { tone: 'info', label: 'Testing…', reason: currentStepName(run), live: true };
+    case 'waiting_approval':
+      return { tone: 'warn', label: 'Waiting for your approval', reason: 'Defects are ready to be filed in Jira.' };
+    case 'failed':
+      return { tone: 'err', label: 'Run crashed', reason: run.error?.message || '' };
+    case 'cancelled':
+      return { tone: '', label: 'Cancelled', reason: '' };
+    default:
+      return { ...(VERDICT[run.output?.verdict] || { tone: '', label: 'Finished' }), reason };
+  }
+}
+const stepSummary = (run, id) => {
+  const s = run.steps?.find((x) => x.id === id);
+  return s && s.status === 'succeeded' ? s.summary || '' : '';
+};
+function currentStepName(run) {
+  const s = run.steps?.find((x) => x.kind === 'task' && x.status === 'running');
+  return s ? `${s.name}…` : 'Queued';
+}
+function outcomeBadge(run) {
+  const o = outcome(run);
+  return html`<span class="pill ${o.tone}${o.live ? ' running' : ''}">${o.label}</span>`;
 }
 
-function agentCard(a) {
-  const m = a.metrics;
-  return html`<div class="agent ${a.status}">
-    <div class="top"><div><div class="name">${a.name}</div><div class="mono muted small">${a.id}</div></div>${pill(a.status)}</div>
-    <div class="desc">${a.description}</div>
-    <div class="stats">
-      <div><b>${m.invocations}</b>tasks</div>
-      <div><b>${pct(m.successRate)}</b>success</div>
-      <div><b>${dur(m.avgDurationMs)}</b>avg time</div>
+/** The workflow as seven stages a person recognises. */
+const STAGES = [
+  ['Ticket', ['fetch-ticket']],
+  ['Analyze', ['analyze-requirements']],
+  ['Write tests', ['generate-tests']],
+  ['Run tests', ['check-environment', 'execute-tests']],
+  ['Diagnose', ['analyze-failures']],
+  ['Report', ['qa-report']],
+  ['File bugs', ['file-defects']],
+];
+const STAGE_TEXT = { done: 'done', running: 'in progress', waiting: 'waiting for you', failed: 'failed', skipped: 'not needed', pending: 'not started' };
+function stageState(run, ids) {
+  const steps = (run?.steps || []).filter((s) => ids.includes(s.id));
+  if (!steps.length) return { state: 'pending', detail: '' };
+  const has = (st) => steps.some((s) => s.status === st);
+  const detail = steps.map((s) => s.error || s.summary).filter(Boolean).join(' · ');
+  if (has('failed')) return { state: 'failed', detail };
+  if (has('waiting_approval')) return { state: 'waiting', detail };
+  if (has('running')) return { state: 'running', detail };
+  if (has('rejected')) return { state: 'skipped', detail: 'rejected by reviewer' };
+  if (steps.every((s) => s.status === 'skipped')) return { state: 'skipped', detail: '' };
+  if (steps.every((s) => s.status === 'succeeded' || s.status === 'skipped')) return { state: 'done', detail };
+  return { state: 'pending', detail };
+}
+function stageStrip(run, { labels = false } = {}) {
+  return html`<ol class="stages${labels ? ' labelled' : ''}">${STAGES.map(([name, ids]) => {
+    const { state, detail } = stageState(run, ids);
+    const tip = `${name}: ${STAGE_TEXT[state]}${detail ? ` — ${detail}` : ''}`;
+    return html`<li class="stage ${state}" title="${tip}"><span class="seg"></span>${labels ? html`<span class="stage-name">${name}</span>` : html`<span class="sr">${tip}</span>`}</li>`;
+  })}</ol>`;
+}
+function stageLegend() {
+  return html`<div class="legend small">${['done', 'running', 'waiting', 'failed', 'skipped', 'pending'].map((s) => html`<span><i class="stage-key ${s}"></i>${STAGE_TEXT[s]}</span>`)}</div>`;
+}
+
+async function renderOverview() {
+  const [ov, agents, tickets, runs, approvals] = await Promise.all([api('/overview'), api('/agents'), api('/jira/tickets'), api('/runs?limit=100'), api('/approvals?status=pending')]);
+  setTopbar(html`<button class="btn primary" data-action="run-batch">Test all “${ov.jiraMonitor.triggerStatus}” tickets</button>`);
+
+  // Latest run per ticket (runs are newest first).
+  const latest = new Map();
+  for (const r of runs) if (r.input?.ticketKey && !latest.has(r.input.ticketKey)) latest.set(r.input.ticketKey, r);
+  const stories = tickets.filter((t) => t.type !== 'Bug');
+
+  const todo = [];
+  for (const a of approvals) todo.push(html`<li class="todo warn"><div><b>${a.title}</b><div class="small muted">${firstLine(a.summary)}</div></div><a class="btn sm primary" href="#/approvals">Review</a></li>`);
+  for (const t of stories) {
+    const r = latest.get(t.key);
+    if (!r || r.status === 'waiting_approval') continue;
+    const o = outcome(r);
+    if (o.tone !== 'err' && o.tone !== 'warn') continue;
+    todo.push(html`<li class="todo ${o.tone}"><div><b><span class="mono">${t.key}</span> ${o.label.toLowerCase()}</b><div class="small muted">${o.reason}</div></div><a class="btn sm" href="#/runs/${r.id}">Open</a></li>`);
+  }
+
+  const counts = stories.reduce((m, t) => {
+    const k = outcome(latest.get(t.key)).label;
+    return { ...m, [k]: (m[k] || 0) + 1 };
+  }, {});
+  const countLine = Object.entries(counts).map(([k, n]) => `${n} ${k.toLowerCase()}`).join(' · ');
+
+  const board = stories.length
+    ? html`<div class="board">${stories.map((t) => {
+        const r = latest.get(t.key);
+        const o = outcome(r);
+        return html`<div class="board-row">
+          <div class="board-ticket"><button class="link mono" data-action="ticket-detail" data-key="${t.key}">${t.key}</button><span class="small muted clamp" title="${t.summary}">${t.summary}</span></div>
+          ${stageStrip(r)}
+          <div class="board-outcome"><span class="pill ${o.tone}${o.live ? ' running' : ''}">${o.label}</span>${o.reason ? html`<span class="small muted clamp" title="${o.reason}">${o.reason}</span>` : ''}</div>
+          <div class="board-act">${r ? html`<a class="btn sm" href="#/runs/${r.id}">Details</a>` : html`<button class="btn sm primary" data-action="run-ticket" data-key="${t.key}">Run QA</button>`}</div>
+        </div>`;
+      })}</div>`
+    : empty('No tickets yet. Connect Jira or use the mock fixtures.');
+
+  const integ = ov.integrations;
+  return html`
+    <section class="panel attention">
+      <div class="panel-head"><h2>${todo.length ? `Needs your action (${todo.length})` : 'Nothing needs you right now'}</h2></div>
+      ${todo.length ? html`<ul class="todos">${todo}</ul>` : html`<div class="panel-body small muted">No pending approvals and no blocked tickets. Start a run from the board below.</div>`}
+    </section>
+    ${panel('Tickets through the QA pipeline', html`<div class="board-head small muted"><span>Ticket</span><span class="stage-heads">${STAGES.map(([n]) => html`<span>${n}</span>`)}</span><span>Outcome</span><span></span></div>${board}<div class="panel-foot">${stageLegend()}</div>`, { flush: true, sub: countLine || 'Each bar is one stage of the latest run. Hover a bar for details.' })}
+    <div class="grid two">
+      ${panel('Agents', agentList(agents), { flush: true, sub: `${agents.filter((a) => a.status === 'busy').length} working · ${agents.length} total` })}
+      ${panel('Activity', feedList(), { flush: true, sub: 'Live, newest first' })}
     </div>
-    ${a.currentTask ? html`<div class="current">▶ ${a.currentTask.action} · ${a.currentTask.runId || 'ad-hoc'}</div>` : a.queued ? html`<div class="current">${a.queued} queued</div>` : ''}
-    ${m.lastError && a.status === 'error' ? html`<div class="small err-text ellipsis" title="${m.lastError}">${m.lastError}</div>` : ''}
-    <div class="small muted">${a.actions.map((x) => x.name + (x.sensitive ? ' 🔒' : '')).join(' · ')} · last ${ago(m.lastRunAt)}</div>
-  </div>`;
+    <p class="small muted connections">Connections: Jira <b>${integ.jira}</b> · LLM <b>${ov.llm.available ? ov.llm.model || ov.llm.provider : 'off (rule-based agents)'}</b> · Code <b>${integ.codeContext}</b> · CI <b>${integ.ci}</b> · Test runner <b>${integ.playwright}</b> · MCP servers <b>${integ.mcpServers}</b> · Jira polling <b>${ov.jiraMonitor.enabled ? `every ${dur(ov.jiraMonitor.intervalMs)}` : 'off'}</b></p>`;
+}
+
+function agentList(agents) {
+  return html`<ul class="agents">${agents.map((a) => {
+    const m = a.metrics;
+    const doing = a.currentTask ? `Working: ${a.currentTask.action}${a.currentTask.runId ? '' : ' (ad hoc)'}` : a.queued ? `${a.queued} queued` : a.status === 'error' ? 'Last task failed' : m.lastRunAt ? `Idle · last task ${ago(m.lastRunAt)}` : 'Idle · not used yet';
+    return html`<li class="agent-row ${a.status}" title="${a.description}">
+      <span class="dot ${a.status === 'busy' ? 'running' : a.status === 'error' ? 'failed' : 'idle'}" aria-hidden="true"></span>
+      <div><div class="name">${a.name.replace(/ Agent$/, '')}</div><div class="small muted">${doing}</div></div>
+      <div class="small muted num">${m.invocations} tasks · ${pct(m.successRate)} ok</div>
+    </li>`;
+  })}</ul>`;
+}
+
+const STEP_VERB = { 'step.completed': 'finished', 'step.failed': 'failed', 'step.waiting_approval': 'is waiting for approval', 'step.rejected': 'was rejected', 'step.skipped': 'was skipped' };
+function describeEvent(ev) {
+  const p = ev.payload || {};
+  if (ev.type === 'log') return { tone: p.level === 'error' ? 'err' : 'warn', text: `${p.agentId ? `${p.agentId}: ` : ''}${p.message}` };
+  if (ev.type === 'run.started') return { tone: 'info', text: `${p.label}: QA run started` };
+  if (ev.type === 'run.succeeded') return { tone: 'ok', text: `${p.label}: QA run finished` };
+  if (ev.type === 'run.failed') return { tone: 'err', text: `${p.label}: QA run crashed` };
+  if (ev.type === 'run.cancelled') return { tone: '', text: `${p.label}: run cancelled` };
+  if (STEP_VERB[ev.type] && p.step?.kind !== 'parallel') {
+    const extra = p.step?.error || p.step?.summary;
+    return { tone: ev.type === 'step.failed' ? 'err' : ev.type === 'step.waiting_approval' ? 'warn' : '', text: `${p.label}: ${p.step?.name || p.step?.id} ${STEP_VERB[ev.type]}${extra ? ` — ${extra}` : ''}` };
+  }
+  if (ev.type === 'approval.requested') return { tone: 'warn', text: `Approval needed: ${p.title}` };
+  if (ev.type === 'approval.decided') return { tone: p.status === 'approved' ? 'ok' : '', text: `${p.title}: ${p.status}` };
+  if (ev.type === 'jira.change') return { tone: 'info', text: `Jira: ${p.key} ${p.kind}${p.to ? ` → ${p.to}` : ''}` };
+  return null;
 }
 
 function feedList() {
-  if (!state.feed.length) return empty('Waiting for events… start a run to see agents coordinate.');
-  return html`<div class="feed" data-keep-scroll="feed">${state.feed.slice(0, 60).map((ev) => {
-    const p = ev.payload || {};
-    let text;
-    if (ev.type === 'log') text = `${p.agentId || ''} ${p.message}`;
-    else if (ev.type.startsWith('step.')) text = `${p.label} · ${p.step?.name || ''}${p.step?.summary ? ` — ${p.step.summary}` : ''}${p.step?.error ? ` — ${p.step.error}` : ''}`;
-    else if (ev.type.startsWith('run.')) text = `${p.label} (${p.workflowId}) → ${p.status}`;
-    else if (ev.type === 'agent.status') text = `${p.agentId} → ${p.status}${p.currentTask ? ` (${p.currentTask.action})` : ''}`;
-    else if (ev.type.startsWith('approval.')) text = `${p.title} → ${p.status}`;
-    else if (ev.type === 'jira.change') text = `${p.key} ${p.kind}${p.to ? ` → ${p.to}` : ''}`;
-    else text = JSON.stringify(p).slice(0, 140);
-    return html`<div class="feed-item"><span class="t">${clock(ev.ts)}</span><span><span class="ty">${ev.type === 'log' ? p.level : ev.type}</span>${text}</span></div>`;
-  })}</div>`;
+  const items = state.feed.map((ev) => [ev, describeEvent(ev)]).filter(([, d]) => d).slice(0, 40);
+  if (!items.length) return empty('Quiet for now. Activity appears here as agents work.');
+  return html`<ul class="feed" data-keep-scroll="feed">${items.map(([ev, d]) => html`<li class="feed-item ${d.tone}"><span class="t">${clock(ev.ts)}</span><span>${d.text}</span></li>`)}</ul>`;
 }
 
 function runsTable(runs) {
-  if (!runs.length) return empty('No runs yet. Start one from the Jira view.');
+  if (!runs.length) return empty('No runs yet. Start one from the overview or the Jira view.');
   return html`<div class="table-wrap"><table>
-    <thead><tr><th>Ticket</th><th>Status</th><th>Verdict</th><th class="hide-sm">Trigger</th><th class="hide-sm">Duration</th><th>Started</th></tr></thead>
-    <tbody>${runs.map((r) => html`<tr class="clickable" tabindex="0" data-href="#/runs/${r.id}">
+    <thead><tr><th>Ticket</th><th>Outcome</th><th class="hide-md">Why</th><th class="hide-sm">Trigger</th><th class="hide-sm num">Duration</th><th>Started</th></tr></thead>
+    <tbody>${runs.map((r) => {
+      const o = outcome(r);
+      return html`<tr class="clickable" tabindex="0" data-href="#/runs/${r.id}">
       <td><a href="#/runs/${r.id}" class="mono">${r.label}</a></td>
-      <td>${pill(r.status)}</td>
-      <td>${r.output?.verdict ? pill(r.output.verdict) : html`<span class="muted">—</span>`}</td>
+      <td>${outcomeBadge(r)}</td>
+      <td class="hide-md small muted wrap">${o.reason}</td>
       <td class="hide-sm muted">${r.trigger}</td>
-      <td class="hide-sm">${dur(r.durationMs)}</td>
-      <td class="muted">${ago(r.createdAt)}</td></tr>`)}</tbody></table></div>`;
+      <td class="hide-sm num">${dur(r.durationMs)}</td>
+      <td class="muted nowrap">${ago(r.createdAt)}</td></tr>`;
+    })}</tbody></table></div>`;
 }
 
 async function renderJira() {
   const tickets = await api('/jira/tickets');
-  setTopbar(html`<button class="btn" data-action="jira-simulate">Simulate Jira activity</button><button class="btn" data-action="jira-poll">Poll Jira now</button><button class="btn primary" data-action="run-batch">Run all “Ready for QA”</button>`);
+  setTopbar(html`<button class="btn" data-action="jira-simulate">Simulate Jira activity</button><button class="btn" data-action="jira-poll">Check Jira now</button><button class="btn primary" data-action="run-batch">Test all “Ready for QA”</button>`);
   const body = tickets.length
     ? html`<div class="table-wrap"><table>
-      <thead><tr><th>Key</th><th>Summary</th><th>Status</th><th class="hide-sm">Type</th><th class="hide-sm">Priority</th><th>Last run</th><th></th></tr></thead>
-      <tbody>${tickets.map((t) => html`<tr>
-        <td><button class="btn sm mono" data-action="ticket-detail" data-key="${t.key}" aria-label="${`Open ${t.key} details`}">${t.key}</button></td>
-        <td class="ellipsis" title="${t.summary}">${t.summary}</td>
-        <td>${pill(t.status === 'Ready for QA' ? 'running' : t.type === 'Bug' ? 'failed' : 'idle', t.status)}</td>
-        <td class="hide-sm muted">${t.type}</td>
-        <td class="hide-sm">${t.priority}</td>
-        <td>${t.lastRun ? html`<a href="#/runs/${t.lastRun.id}">${t.lastRun.verdict ? pill(t.lastRun.verdict) : pill(t.lastRun.status)}</a> <span class="muted small">${ago(t.lastRun.at)}</span>` : html`<span class="muted">never</span>`}</td>
-        <td>${t.type === 'Bug' ? '' : html`<button class="btn sm primary" data-action="run-ticket" data-key="${t.key}">Run QA</button>`}</td>
-      </tr>`)}</tbody></table></div>`
+      <thead><tr><th>Key</th><th>Summary</th><th class="hide-sm">Jira status</th><th class="hide-md">Type</th><th class="hide-md">Priority</th><th>Last QA outcome</th><th></th></tr></thead>
+      <tbody>${tickets.map((t) => {
+        const o = t.lastRun ? outcome({ status: t.lastRun.status, output: { verdict: t.lastRun.verdict } }) : null;
+        return html`<tr>
+        <td><button class="link mono" data-action="ticket-detail" data-key="${t.key}" aria-label="${`Open ${t.key} details`}">${t.key}</button></td>
+        <td class="wrap">${t.summary}</td>
+        <td class="hide-sm nowrap">${t.status}</td>
+        <td class="hide-md muted">${t.type}</td>
+        <td class="hide-md muted">${t.priority}</td>
+        <td class="nowrap">${o ? html`<a href="#/runs/${t.lastRun.id}" class="pill ${o.tone}">${o.label}</a> <span class="muted small">${ago(t.lastRun.at)}</span>` : html`<span class="muted">${t.type === 'Bug' ? '—' : 'Not tested yet'}</span>`}</td>
+        <td class="nowrap">${t.type === 'Bug' ? html`<span class="small muted">Defect</span>` : html`<button class="btn sm ${t.lastRun ? '' : 'primary'}" data-action="run-ticket" data-key="${t.key}">${t.lastRun ? 'Run again' : 'Run QA'}</button>`}</td>
+      </tr>`;
+      })}</tbody></table></div>`
     : empty('No tickets found.');
-  return panel('Tickets', body, { flush: true, sub: `${tickets.length} tickets · monitored by the Jira Monitoring Agent` });
+  return panel('Tickets', body, { flush: true, sub: `${tickets.length} tickets · the Jira Monitoring Agent watches for changes` });
 }
 
 async function getWorkflows() {
@@ -363,23 +465,28 @@ async function renderRuns(params) {
   if (params[0]) return renderRunDetail(params[0]);
   const [runs, workflows] = await Promise.all([api('/runs?limit=100'), getWorkflows()]);
   setTopbar(html`<a class="btn" href="#/jira">Start from a ticket</a>`);
-  return html`${workflows.map((w) => panel(w.name, renderDag(w, null), { sub: w.description }))}
-    ${panel('Runs', runsTable(runs), { flush: true, sub: `${runs.length} most recent` })}`;
+  return html`${panel('Runs', runsTable(runs), { flush: true, sub: `${runs.length} most recent · newest first` })}
+    ${workflows.map((w) => panel(`How “${w.name}” works`, renderDag(w, null), { sub: 'Steps stacked in one column run in parallel. Steps marked “if” run only when their condition holds; “approval” steps wait for a person.' }))}`;
 }
 
 async function renderRunDetail(id) {
-  const [run, workflows, logs] = await Promise.all([api(`/runs/${id}`), getWorkflows(), api(`/runs/${id}/logs`)]);
-  const wf = workflows.find((w) => w.id === run.workflowId);
+  const [run, logs] = await Promise.all([api(`/runs/${id}`), api(`/runs/${id}/logs`)]);
   const active = ['queued', 'running', 'waiting_approval'].includes(run.status);
   setTopbar(html`${active ? html`<button class="btn danger" data-action="cancel-run" data-id="${run.id}">Cancel run</button>` : ''}
     ${run.outputs?.['qa-report'] ? html`<a class="btn" href="#/reports/${run.id}">QA report</a>` : ''}
     <a class="btn" href="#/trace/${encodeURIComponent(run.input?.ticketKey || '')}">Traceability</a>`);
   titleEl.textContent = `Run · ${run.label}`;
 
-  const header = html`<div class="panel"><div class="panel-body row between">
-    <div class="row"><span class="mono">${run.id}</span>${pill(run.status)}${run.output?.verdict ? pill(run.output.verdict) : ''}</div>
-    <div class="row small muted"><span>${run.workflowName}</span><span>trigger: ${run.trigger}</span><span>started ${ago(run.startedAt || run.createdAt)}</span><span>duration ${dur(run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null))}</span></div>
-  </div>${run.error ? html`<div class="panel-body"><div class="error-box">${run.error.stepId ? `${run.error.stepId}: ` : ''}${run.error.message}</div></div>` : ''}</div>`;
+  const o = outcome(run);
+  const header = html`<section class="panel">
+    <div class="panel-body stack">
+      <div class="row between"><div class="row"><span class="pill lg ${o.tone}${o.live ? ' running' : ''}">${o.label}</span><b>${run.label}</b></div>
+        <div class="row small muted"><span>trigger: ${run.trigger}</span><span>started ${ago(run.startedAt || run.createdAt)}</span><span>took ${dur(run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null))}</span></div></div>
+      ${o.reason ? html`<p class="reason">${o.reason}</p>` : ''}
+      ${run.error ? html`<div class="error-box">${run.error.stepId ? `${run.error.stepId}: ` : ''}${run.error.message}</div>` : ''}
+      ${stageStrip(run, { labels: true })}
+    </div>
+  </section>`;
 
   const steps = run.steps.filter((s) => s.kind === 'task' || s.kind === 'parallel');
   const timeline = html`<div class="timeline">${steps.map((s) => html`<div class="step ${s.parentId ? 'child' : ''}">
@@ -415,7 +522,6 @@ async function renderRunDetail(id) {
   }
 
   return html`${header}
-    ${wf ? panel('Workflow', renderDag(wf, run), { flush: true, sub: 'live step status · hover nodes for details' }) : ''}
     <div class="grid two">
       ${panel('Steps', timeline, { flush: true })}
       <section class="panel">

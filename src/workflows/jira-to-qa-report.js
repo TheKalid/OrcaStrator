@@ -118,6 +118,8 @@ export const jiraToQaReport = {
     verdict: ctx.steps['qa-report']?.verdict,
     reportId: ctx.steps['qa-report']?.reportId,
     passRate: ctx.steps['qa-report']?.metrics.passRate,
+    // Plain-language "why" for the verdict, shown next to it in the dashboard.
+    reason: ctx.steps['qa-report']?.recommendations[0] || null,
     defectsCreated: ctx.steps['file-defects']?.created || [],
   }),
 };

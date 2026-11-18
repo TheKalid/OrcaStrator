@@ -78,6 +78,7 @@ Copy `.env.example` to `.env` and set what you need. Without these settings ever
 
 ## Documentation
 
+- [User manual (Spanish)](docs/MANUAL_DE_USUARIO.md): how to use the console, what each outcome means, common tasks, troubleshooting.
 - [Architecture](docs/ARCHITECTURE.md): components, contracts, agents, workflow, how to extend, roadmap.
 
 ## License
