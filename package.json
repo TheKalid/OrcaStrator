@@ -1,0 +1,25 @@
+{
+  "name": "orcastrator",
+  "version": "0.1.0",
+  "description": "ORCA - Orchestrator for Reasoning, Coordination & Automation. An AI agent orchestrator for software testing.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "demo-app": "node demo-app/server.js",
+    "run:workflow": "node src/cli.js run",
+    "test": "node --test tests/"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.10.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@playwright/test": "^1.65.1",
+    "express": "^5.3.0",
+    "zod": "^4.6.7"
+  }
+}

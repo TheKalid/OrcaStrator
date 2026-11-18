@@ -1,0 +1,5 @@
+{
+  "servers": {
+    "qa-tools": { "command": "node", "args": ["examples/mcp/qa-tools-server.js"] }
+  }
+}

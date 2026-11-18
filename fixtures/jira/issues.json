@@ -1,0 +1,71 @@
+[
+  {
+    "key": "SHOP-101",
+    "summary": "User can log in with valid credentials",
+    "type": "Story",
+    "status": "Ready for QA",
+    "priority": "High",
+    "labels": ["auth", "web"],
+    "assignee": "Ana Torres",
+    "updated": "2026-11-16T10:12:00.000Z",
+    "description": "As a registered customer\nI want to log in with my email and password\nSo that I can access my account and order history.\n\nThe login form lives at /login. After a successful login the user lands on /dashboard.",
+    "acceptanceCriteria": "Scenario: Successful login\n  Given I am on the \"login\" page\n  When I fill \"login-email\" with \"demo@orca.dev\"\n  And I fill \"login-password\" with \"orca123\"\n  And I click \"login-submit\"\n  Then I should be on the \"dashboard\" page\n  And \"welcome-message\" should show \"Welcome back, Demo User\"\n\nScenario: Invalid password shows an error\n  Given I am on the \"login\" page\n  When I fill \"login-email\" with \"demo@orca.dev\"\n  And I fill \"login-password\" with \"wrong-password\"\n  And I click \"login-submit\"\n  Then I should see \"Invalid email or password\"",
+    "comments": [
+      { "id": "c1", "author": "Ana Torres", "body": "Implemented in PR #42, ready for QA.", "created": "2026-11-16T10:12:00.000Z" }
+    ]
+  },
+  {
+    "key": "SHOP-102",
+    "summary": "Apply discount code at checkout",
+    "type": "Story",
+    "status": "Ready for QA",
+    "priority": "Critical",
+    "labels": ["checkout", "pricing", "web"],
+    "assignee": "Luis Romero",
+    "updated": "2026-11-16T15:40:00.000Z",
+    "description": "As a shopper\nI want to apply a discount code in my cart\nSo that I pay the promotional price.\n\nCode SAVE10 gives 10% off the cart subtotal. Invalid codes must be rejected without changing the total.",
+    "acceptanceCriteria": "Scenario: Apply a valid discount code\n  Given I am logged in\n  And I am on the \"cart\" page\n  When I fill \"discount-code\" with \"SAVE10\"\n  And I click \"apply-discount\"\n  Then \"discount-message\" should show \"Discount SAVE10 applied\"\n  And \"cart-total\" should show \"$90.00\"\n\nScenario: Reject an invalid discount code\n  Given I am logged in\n  And I am on the \"cart\" page\n  When I fill \"discount-code\" with \"BOGUS\"\n  And I click \"apply-discount\"\n  Then I should see \"Invalid discount code\"\n  And \"cart-total\" should show \"$100.00\"",
+    "comments": [
+      { "id": "c1", "author": "Luis Romero", "body": "Refactored the pricing module to use basis points.", "created": "2026-11-16T15:40:00.000Z" }
+    ]
+  },
+  {
+    "key": "SHOP-103",
+    "summary": "Products API returns the catalog",
+    "type": "Story",
+    "status": "Ready for QA",
+    "priority": "Medium",
+    "labels": ["api", "catalog"],
+    "assignee": "Marta Gil",
+    "updated": "2026-11-15T09:00:00.000Z",
+    "description": "As an API consumer\nI want to list the product catalog\nSo that I can show products in the mobile app.\n\nGET /api/products returns { items: Product[] }. GET /api/products/:id returns 404 with { error } when the product does not exist.",
+    "acceptanceCriteria": "Scenario: List products\n  When I send a GET request to \"/api/products\"\n  Then the response status should be 200\n  And the response should contain 3 items\n  And each item should have \"id\", \"name\", \"price\"\n\nScenario: Unknown product returns 404\n  When I send a GET request to \"/api/products/999\"\n  Then the response status should be 404\n  And the response field \"error\" should be \"Product not found\"",
+    "comments": []
+  },
+  {
+    "key": "SHOP-104",
+    "summary": "Request a password reset link",
+    "type": "Story",
+    "status": "Ready for QA",
+    "priority": "Medium",
+    "labels": ["auth", "web"],
+    "assignee": "Ana Torres",
+    "updated": "2026-11-17T08:30:00.000Z",
+    "description": "As a customer who forgot my password\nI want to request a reset link\nSo that I can regain access to my account.\n\nThe confirmation message must not reveal whether the email exists.",
+    "acceptanceCriteria": "Scenario: Request a password reset link\n  Given I am on the \"reset-password\" page\n  When I fill \"reset-email\" with \"demo@orca.dev\"\n  And I click \"reset-submit\"\n  Then \"reset-confirmation\" should show \"If an account exists, a reset link has been sent\"",
+    "comments": []
+  },
+  {
+    "key": "SHOP-105",
+    "summary": "Order history page",
+    "type": "Story",
+    "status": "In Progress",
+    "priority": "Low",
+    "labels": ["orders", "web"],
+    "assignee": "Marta Gil",
+    "updated": "2026-11-17T11:05:00.000Z",
+    "description": "Users should be able to see their past orders. The page should be fast and look good on mobile.",
+    "acceptanceCriteria": "",
+    "comments": []
+  }
+]
