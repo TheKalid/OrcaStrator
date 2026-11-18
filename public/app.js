@@ -9,8 +9,11 @@ const state = {
   workflows: null,
   runLogs: [], // live log lines for the open run
   pendingApprovals: 0,
+  environments: null, // GET /api/environments
   runDetailTab: 'logs',
   selectedFile: null,
+  casesSuite: 'all', // Test cases view: selected suite filter
+  casesQuery: '',
 };
 const view = document.getElementById('view');
 const titleEl = document.getElementById('page-title');
@@ -18,11 +21,12 @@ const topRight = document.getElementById('topbar-right');
 
 // ----------------------------------------------------------------- router
 const ROUTES = {
-  overview: { title: 'Overview', render: renderOverview, live: /^(run\.|step\.|agent\.status|approval\.|jira\.change)/ },
+  overview: { title: 'Overview', render: renderOverview, live: /^(run\.|step\.|agent\.status|approval\.|jira\.change|environment\.)/ },
   jira: { title: 'Jira tickets', render: renderJira, live: /^(run\.(succeeded|failed|queued|cancelled)|jira\.change)/ },
   runs: { title: 'Runs', render: renderRuns, live: /^(run\.|step\.)/ },
+  cases: { title: 'Test cases', render: renderCases, live: /^run\.(succeeded|failed|queued|started)/ },
   tests: { title: 'Test results', render: renderTests, live: /^run\.(succeeded|failed)/ },
-  deployments: { title: 'Environments & CI', render: renderDeployments, live: /^run\.(succeeded|failed)/ },
+  deployments: { title: 'Environments & CI', render: renderDeployments, live: /^(run\.(succeeded|failed)|environment\.)/ },
   investigations: { title: 'Failure analysis', render: renderInvestigations, live: /^run\.(succeeded|failed)/ },
   approvals: { title: 'Approvals', render: renderApprovals, live: /^approval\./ },
   trace: { title: 'Traceability', render: renderTrace, live: /^trace\.updated/ },
@@ -68,6 +72,7 @@ function restoreScroll(saved) {
   }
 }
 function afterRender() {
+  filterCases();
   view.querySelectorAll('[data-keep-scroll="logs"]').forEach((el) => {
     if (!el.dataset.scrolled) {
       el.scrollTop = el.scrollHeight;
@@ -128,6 +133,7 @@ function onEvent(ev) {
   }
   if (ev.type !== 'memory.updated' && ev.type !== 'task.started' && ev.type !== 'task.finished') pushFeed(ev);
   if (ev.type.startsWith('approval.')) refreshApprovalBadge();
+  if (ev.type === 'environment.changed') refreshEnvironments();
   if (ev.type === 'approval.requested') toast(`Approval required: ${ev.payload.title}`);
   if (ev.type === 'run.succeeded' || ev.type === 'run.failed') toast(`${ev.payload.label}: QA run ${ev.type === 'run.failed' ? 'crashed' : 'finished'}`, ev.type === 'run.failed' ? 'err' : 'ok');
   const route = ROUTES[name];
@@ -146,6 +152,28 @@ function appendLiveLog(entry) {
   box.querySelector('.empty')?.remove();
   box.insertAdjacentHTML('beforeend', String(logLine(entry)));
   if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+/** Sidebar switcher: which environment new runs use. */
+async function refreshEnvironments() {
+  try {
+    state.environments = await api('/environments');
+  } catch {
+    return;
+  }
+  const { environments, active } = state.environments;
+  const select = document.getElementById('env-select');
+  select.innerHTML = environments.map((e) => String(html`<option value="${e.name}" ${e.name === active ? raw('selected') : ''}>${e.name}</option>`)).join('');
+  select.disabled = environments.length < 2;
+  select.title = environments.length < 2 ? 'Declare more environments in orca.environments.json' : 'Environment used by new QA runs';
+  const url = document.getElementById('env-url');
+  url.textContent = environments.find((e) => e.name === active)?.baseUrl.replace(/^https?:\/\//, '') || '';
+}
+async function switchEnvironment(name) {
+  state.environments = await api('/environments/active', { method: 'PUT', body: { name } });
+  toast(`New QA runs will use ${name}`, 'ok');
+  refreshEnvironments();
+  renderRoute({ soft: true });
 }
 
 async function refreshApprovalBadge() {
@@ -216,9 +244,41 @@ const ACTIONS = {
     toast(approved ? 'Approved — the workflow continues' : 'Rejected', approved ? 'ok' : '');
     renderRoute({ soft: true });
   },
+  async 'use-env'(el) {
+    el.disabled = true;
+    await switchEnvironment(el.dataset.env);
+  },
   'run-tab'(el) {
     state.runDetailTab = el.dataset.tab;
     renderRoute({ soft: true });
+  },
+  async 'run-suite'(el) {
+    el.disabled = true;
+    const suite = el.dataset.suite;
+    await api('/runs', { method: 'POST', body: { workflowId: 'test-suite', input: { suite } } });
+    toast(`Started ${suite === 'all' ? 'all tests' : `the ${suite} suite`} on ${state.environments?.active || 'the active environment'}`, 'ok');
+    el.disabled = false;
+  },
+  async 'run-case'(el) {
+    el.disabled = true;
+    await api('/runs', { method: 'POST', body: { workflowId: 'test-suite', input: { suite: 'all', filter: el.dataset.filter } } });
+    toast(`Running ${el.dataset.title}`, 'ok');
+    el.disabled = false;
+  },
+  async 'case-source'(el) {
+    const { file, line } = el.dataset;
+    const source = await api(`/test-library/source?file=${encodeURIComponent(file)}`);
+    openDrawer(
+      file,
+      html`<div class="row small muted"><span class="env-tag">${icon('file', { size: 12 })}qa-tests/${file}</span><span>line ${line}</span></div>
+        <pre class="code" data-keep-scroll="source">${raw(source.split('\n').map((l, i) => String(html`<span class="${i + 1 === Number(line) ? 'hl-line' : ''}">${l}</span>`)).join('\n'))}</pre>`,
+    );
+    document.querySelector('#drawer-body .hl-line')?.scrollIntoView({ block: 'center' });
+  },
+  'cases-suite'(el) {
+    state.casesSuite = el.dataset.suite;
+    view.querySelectorAll('[data-action="cases-suite"]').forEach((b) => b.setAttribute('aria-pressed', String(b === el)));
+    filterCases();
   },
   'open-file'(el) {
     state.selectedFile = el.dataset.file;
@@ -249,9 +309,16 @@ document.addEventListener('keydown', (e) => {
     location.hash = row.dataset.href;
   }
 });
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'cases-search') {
+    state.casesQuery = e.target.value;
+    filterCases();
+  }
+});
 document.addEventListener('change', (e) => {
   if (e.target.id === 'trace-ticket') location.hash = `#/trace/${encodeURIComponent(e.target.value)}`;
   if (e.target.id === 'report-run') location.hash = `#/reports/${encodeURIComponent(e.target.value)}`;
+  if (e.target.id === 'env-select') switchEnvironment(e.target.value).catch((err) => toast(err.message, 'err'));
 });
 document.getElementById('menu-open').addEventListener('click', () => document.getElementById('sidebar').classList.add('open'));
 document.getElementById('menu-close').addEventListener('click', () => document.getElementById('sidebar').classList.remove('open'));
@@ -266,6 +333,10 @@ const VERDICT = {
   ready_for_release: { tone: 'ok', label: 'Ready to release' },
   needs_attention: { tone: 'warn', label: 'Needs attention' },
   blocked: { tone: 'err', label: 'Blocked' },
+  // Suite runs (test-suite workflow)
+  passed: { tone: 'ok', label: 'All passed' },
+  failed: { tone: 'err', label: 'Failures found' },
+  not_run: { tone: 'warn', label: 'Not run' },
 };
 function outcome(run) {
   if (!run) return { tone: '', label: 'Not tested yet', reason: '' };
@@ -292,7 +363,7 @@ function currentStepName(run) {
   const s = run.steps?.find((x) => x.kind === 'task' && x.status === 'running');
   return s ? `${s.name}…` : 'Queued';
 }
-const OUTCOME_ICON = { 'Ready to release': 'check', 'Needs attention': 'alert', Blocked: 'ban', 'Testing…': 'spinner', 'Waiting for your approval': 'user', 'Run crashed': 'crash', Cancelled: 'minus', 'Not tested yet': 'dashed', Finished: 'check' };
+const OUTCOME_ICON = { 'All passed': 'check', 'Failures found': 'alert', 'Not run': 'minus', 'Ready to release': 'check', 'Needs attention': 'alert', Blocked: 'ban', 'Testing…': 'spinner', 'Waiting for your approval': 'user', 'Run crashed': 'crash', Cancelled: 'minus', 'Not tested yet': 'dashed', Finished: 'check' };
 function outcomePill(o, { lg = false } = {}) {
   return html`<span class="pill has-ic ${o.tone}${lg ? ' lg' : ''}${o.live ? ' live' : ''}">${icon(OUTCOME_ICON[o.label] || 'dashed', { size: lg ? 15 : 13, cls: o.live ? 'spin' : '' })}${o.label}</span>`;
 }
@@ -383,12 +454,13 @@ async function renderOverview() {
     <div class="panel-body health">
       <figure class="chart"><figcaption class="small muted">Tickets by outcome</figcaption>${segments.length ? donut(segments, { caption: 'tickets' }) : empty('No tickets yet.')}</figure>
       <figure class="chart grow"><figcaption class="small muted">Tests per run, last ${recent.length} (oldest left)</figcaption>
-        ${recent.length ? columns(recent.map((e) => ({ label: e.ticketKey.replace(/^[A-Z]+-/, ''), title: `${e.ticketKey} · ${ago(e.finishedAt)}`, href: `#/runs/${e.runId}`, parts: [{ value: e.summary.passed, tone: 'ok', label: 'passed' }, { value: e.summary.failed, tone: 'err', label: 'failed' }, { value: e.summary.skipped, tone: 'muted', label: 'skipped' }] }))) : empty('No test runs yet.')}
+        ${recent.length ? columns(recent.map((e) => ({ label: execLabel(e), title: `${e.suite ? `${e.ticketKey} suite` : e.ticketKey} · ${ago(e.finishedAt)}`, href: `#/runs/${e.runId}`, parts: [{ value: e.summary.passed, tone: 'ok', label: 'passed' }, { value: e.summary.failed, tone: 'err', label: 'failed' }, { value: e.summary.skipped, tone: 'muted', label: 'skipped' }] }))) : empty('No test runs yet.')}
         <div class="legend small"><span><i class="sw tone-ok"></i>passed</span><span><i class="sw tone-err"></i>failed</span><span><i class="sw tone-muted"></i>skipped</span></div>
       </figure>
     </div>
   </section>`;
   const conns = [
+    ['server', 'Environment', integ.environment, true],
     ['ticket', 'Jira', integ.jira, integ.jira !== 'off'],
     ['cpu', 'LLM', ov.llm.available ? ov.llm.model || ov.llm.provider : 'off (rule-based)', ov.llm.available],
     ['code', 'Code', integ.codeContext, true],
@@ -439,12 +511,14 @@ function describeEvent(ev) {
   if (ev.type === 'approval.requested') return { tone: 'warn', text: `Approval needed: ${p.title}` };
   if (ev.type === 'approval.decided') return { tone: p.status === 'approved' ? 'ok' : '', text: `${p.title}: ${p.status}` };
   if (ev.type === 'jira.change') return { tone: 'info', text: `Jira: ${p.key} ${p.kind}${p.to ? ` → ${p.to}` : ''}` };
+  if (ev.type === 'environment.changed') return { tone: 'info', text: `Test environment switched to ${p.name}` };
   return null;
 }
 
 function feedIcon(ev, d) {
   if (ev.type.startsWith('approval.')) return 'user';
   if (ev.type === 'jira.change') return 'ticket';
+  if (ev.type === 'environment.changed') return 'server';
   if (ev.type === 'run.started') return 'play';
   if (d.tone === 'err') return 'crash';
   if (d.tone === 'warn') return 'alert';
@@ -460,13 +534,14 @@ function feedList() {
 function runsTable(runs) {
   if (!runs.length) return empty('No runs yet. Start one from the overview or the Jira view.');
   return html`<div class="table-wrap"><table>
-    <thead><tr><th>Ticket</th><th>Outcome</th><th class="hide-md">Why</th><th class="hide-sm">Trigger</th><th class="hide-sm num">Duration</th><th>Started</th></tr></thead>
+    <thead><tr><th>Ticket</th><th>Outcome</th><th class="hide-md">Why</th><th class="hide-sm">Environment</th><th class="hide-sm">Trigger</th><th class="hide-sm num">Duration</th><th>Started</th></tr></thead>
     <tbody>${runs.map((r) => {
       const o = outcome(r);
       return html`<tr class="clickable" tabindex="0" data-href="#/runs/${r.id}">
       <td><a href="#/runs/${r.id}" class="mono">${r.label}</a></td>
       <td>${outcomeBadge(r)}</td>
       <td class="hide-md small muted wrap">${o.reason}</td>
+      <td class="hide-sm"><span class="env-tag">${r.input?.environment || '—'}</span></td>
       <td class="hide-sm muted">${r.trigger}</td>
       <td class="hide-sm num">${dur(r.durationMs)}</td>
       <td class="muted nowrap">${ago(r.createdAt)}</td></tr>`;
@@ -520,10 +595,10 @@ async function renderRunDetail(id) {
   const header = html`<section class="panel">
     <div class="panel-body stack">
       <div class="row between"><div class="row">${outcomePill(o, { lg: true })}<b>${run.label}</b></div>
-        <div class="row small muted"><span>trigger: ${run.trigger}</span><span>started ${ago(run.startedAt || run.createdAt)}</span><span>took ${dur(run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null))}</span></div></div>
+        <div class="row small muted"><span class="env-tag">${icon('server', { size: 12 })}${run.input?.environment || '—'}</span><span>trigger: ${run.trigger}</span><span>started ${ago(run.startedAt || run.createdAt)}</span><span>took ${dur(run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null))}</span></div></div>
       ${o.reason ? html`<p class="reason">${o.reason}</p>` : ''}
       ${run.error ? html`<div class="error-box">${run.error.stepId ? `${run.error.stepId}: ` : ''}${run.error.message}</div>` : ''}
-      ${stageStrip(run, { labels: true })}
+      ${run.workflowId === 'jira-to-qa-report' ? stageStrip(run, { labels: true }) : ''}
     </div>
   </section>`;
 
@@ -572,6 +647,87 @@ async function renderRunDetail(id) {
     </div>`;
 }
 
+// ------------------------------------------------------------ test cases
+async function renderCases() {
+  const lib = await api('/test-library');
+  const suites = lib.suites;
+  if (!suites.some((s) => s.name === state.casesSuite)) state.casesSuite = 'all';
+  const smoke = suites.find((s) => s.name === 'smoke' && s.count);
+  setTopbar(html`${smoke ? html`<button class="btn primary" data-action="run-suite" data-suite="smoke">${icon('play', { size: 14 })}Run smoke</button>` : ''}
+    <button class="btn" data-action="run-suite" data-suite="all">${icon('play', { size: 14 })}Run all</button>`);
+
+  const tests = lib.tests;
+  const automated = tests.filter((t) => t.state === 'active').length;
+  const fromTickets = tests.filter((t) => t.ticketKey).length;
+  const withResult = tests.filter((t) => t.last);
+  const passing = withResult.filter((t) => t.last.status === 'passed').length;
+  const env = state.environments?.active;
+
+  const suiteCard = (s) => {
+    const r = s.lastRun;
+    const total = r ? Math.max(1, r.summary.total) : 1;
+    return html`<article class="suite ${s.name === 'all' ? 'all' : ''}">
+      <div class="suite-head"><h3>${s.name === 'all' ? 'All tests' : s.name}</h3>${s.tag ? html`<span class="tag">${s.tag}</span>` : ''}<span class="suite-count num">${s.count}</span></div>
+      <p class="small muted">${s.description || 'Tests tagged ' + s.tag}</p>
+      <div class="suite-last small">${r
+        ? html`<div class="bar" role="img" aria-label="${`${r.summary.passed} passed, ${r.summary.failed} failed, ${r.summary.skipped} skipped`}"><span class="p" style="width:${(r.summary.passed / total) * 100}%"></span><span class="f" style="width:${(r.summary.failed / total) * 100}%"></span><span class="s" style="width:${(r.summary.skipped / total) * 100}%"></span></div>
+          <span>${r.summary.passed}/${r.summary.total} passed${r.summary.failed ? html` · <span class="err-text">${r.summary.failed} failed</span>` : ''}</span><a href="#/runs/${r.runId}" class="muted">${ago(r.at)} · ${r.environment}</a>`
+        : html`<span class="muted">Not run yet</span>`}</div>
+      <button class="btn sm" data-action="run-suite" data-suite="${s.name}" ${s.count ? '' : raw('disabled')}>${icon('play', { size: 12 })}Run ${s.name === 'all' ? 'all' : s.name}</button>
+    </article>`;
+  };
+
+  const row = (t) => {
+    const tags = t.tags.filter((g) => g.slice(1) !== t.ticketKey);
+    const search = `${t.title} ${t.describe || ''} ${t.file} ${t.caseId || ''} ${t.tags.join(' ')}`.toLowerCase();
+    return html`<tr data-case data-tags="${t.tags.join(' ')}" data-search="${search}">
+      <td class="wrap"><div class="case-title">${t.title}</div><div class="small muted">${t.caseId ? html`<span class="mono">${t.caseId}</span> · ` : ''}${t.describe || ''}</div>
+        <button class="link mono small" data-action="case-source" data-file="${t.file}" data-line="${t.line}" aria-label="${`View source of ${t.title}`}">${icon('code', { size: 12, cls: 'inline' })}${t.file}:${t.line}</button></td>
+      <td><div class="tags">${t.ticketKey ? html`<span class="tag ticket">${icon('ticket', { size: 11 })}${t.ticketKey}</span>` : ''}${tags.map((g) => html`<span class="tag">${g}</span>`)}${t.state !== 'active' ? html`<span class="pill warn">not automated</span>` : ''}</div></td>
+      <td class="nowrap">${t.last ? html`${pill(t.last.status, null)}<div class="small muted"><a href="#/runs/${t.last.runId}" class="muted">${ago(t.last.at)}</a></div>` : html`<span class="muted small">Not run yet</span>`}</td>
+      <td class="num"><button class="btn sm" data-action="run-case" data-filter="${`${t.file}:${t.line}`}" data-title="${t.title}" aria-label="${`Run ${t.title}`}" ${t.state === 'active' ? '' : raw('disabled')}>${icon('play', { size: 12 })}Run</button></td>
+    </tr>`;
+  };
+
+  return html`<p class="page-note small">Every Playwright test in <span class="mono">${lib.dir}/</span>: hand-written tests and the tests OrcaStrator keeps from each ticket. Tags such as <span class="mono">@smoke</span> group them into suites. ${lib.source === 'playwright' ? 'The list comes straight from Playwright. ' : ''}Runs use the <b>${env || 'active'}</b> environment.</p>
+    ${lib.source === 'static' && lib.errors?.length ? html`<p class="page-note small warn-text" role="status">${icon('alert', { size: 14, cls: 'inline' })}Playwright could not list the tests, so this list was read from the sources and may miss tests made in loops. ${lib.errors[0]}</p>` : ''}
+    <div class="grid kpis">
+      <div class="kpi"><div class="label">Test cases</div><div class="value">${tests.length}</div><div class="hint">${lib.files.length} spec files</div></div>
+      <div class="kpi"><div class="label">Automated</div><div class="value">${automated}</div><div class="hint">${tests.length - automated} not automated</div></div>
+      <div class="kpi"><div class="label">From tickets</div><div class="value">${fromTickets}</div><div class="hint">${tests.length - fromTickets} hand-written</div></div>
+      <div class="kpi ${withResult.length && passing < withResult.length ? 'warn' : withResult.length ? 'ok' : ''}"><div class="label">Passing</div><div class="value">${withResult.length ? `${passing}/${withResult.length}` : '—'}</div><div class="hint">latest result of each test</div></div>
+    </div>
+    ${panel('Suites', html`<div class="suites">${suites.map(suiteCard)}</div>`, { sub: 'Run a whole suite against the selected environment. Results show here and in Test results.' })}
+    <section class="panel">
+      <div class="panel-head"><div><h2>Test cases</h2><div class="sub" id="cases-count">${tests.length} tests</div></div>
+        <input type="text" id="cases-search" class="cases-search" placeholder="Search tests, files, tickets" aria-label="Search test cases" value="${state.casesQuery}"></div>
+      <div class="filters" role="group" aria-label="Filter by suite">${suites.map((s) => html`<button class="chip" data-action="cases-suite" data-suite="${s.name}" data-tag="${s.tag || ''}" aria-pressed="${String(s.name === state.casesSuite)}">${s.name === 'all' ? 'All' : s.name}<span class="num">${s.count}</span></button>`)}</div>
+      ${tests.length
+        ? html`<div class="table-wrap"><table class="cases"><thead><tr><th>Test case</th><th>Tags</th><th>Last result</th><th class="num"><span class="sr">Actions</span></th></tr></thead><tbody>${tests.map(row)}</tbody></table>
+          <div class="empty" id="cases-empty" hidden>No test matches this filter.</div></div>`
+        : empty(`No tests yet. Add *.spec.mjs files to ${lib.dir}/ or run a ticket's QA workflow.`)}
+    </section>`;
+}
+
+/** Client-side filter, so typing in the search box never re-renders the view. */
+function filterCases() {
+  const rows = view.querySelectorAll('tr[data-case]');
+  if (!rows.length) return;
+  const suite = state.casesSuite;
+  const tag = suite === 'all' ? null : view.querySelector(`[data-action="cases-suite"][data-suite="${CSS.escape(suite)}"]`)?.dataset.tag || null;
+  const q = state.casesQuery.trim().toLowerCase();
+  let shown = 0;
+  rows.forEach((r) => {
+    const ok = (!tag || r.dataset.tags.split(' ').includes(tag)) && (!q || r.dataset.search.includes(q));
+    r.hidden = !ok;
+    if (ok) shown++;
+  });
+  const count = view.querySelector('#cases-count');
+  if (count) count.textContent = shown === rows.length ? `${rows.length} tests` : `${shown} of ${rows.length} tests`;
+  const none = view.querySelector('#cases-empty');
+  if (none) none.hidden = shown > 0;
+}
+
 function logLine(e) {
   return html`<div class="log-line ${e.level}"><span class="muted">${clock(e.ts)}</span> <span class="lv">${e.level.toUpperCase()}</span> ${e.agentId ? html`<span class="who">${e.agentId}</span> ` : ''}${e.stepId ? html`<span class="muted">[${e.stepId}]</span> ` : ''}${e.message}</div>`;
 }
@@ -581,7 +737,7 @@ async function renderTests() {
   if (!executions.length) return panel('Executions', empty('No test executions yet.'));
   const total = executions.reduce((a, e) => ({ p: a.p + e.summary.passed, f: a.f + e.summary.failed, s: a.s + e.summary.skipped }), { p: 0, f: 0, s: 0 });
   const recent = executions.slice(0, 24).reverse();
-  return html`${panel('Results per execution', html`${columns(recent.map((e) => ({ label: e.ticketKey.replace(/^[A-Z]+-/, ''), title: `${e.ticketKey} · ${ago(e.finishedAt)}`, href: `#/runs/${e.runId}`, parts: [{ value: e.summary.passed, tone: 'ok', label: 'passed' }, { value: e.summary.failed, tone: 'err', label: 'failed' }, { value: e.summary.skipped, tone: 'muted', label: 'skipped' }] })), { height: 150 })}
+  return html`${panel('Results per execution', html`${columns(recent.map((e) => ({ label: execLabel(e), title: `${e.suite ? `${e.ticketKey} suite` : e.ticketKey} · ${ago(e.finishedAt)}`, href: `#/runs/${e.runId}`, parts: [{ value: e.summary.passed, tone: 'ok', label: 'passed' }, { value: e.summary.failed, tone: 'err', label: 'failed' }, { value: e.summary.skipped, tone: 'muted', label: 'skipped' }] })), { height: 150 })}
       <div class="legend small"><span><i class="sw tone-ok"></i>passed</span><span><i class="sw tone-err"></i>failed</span><span><i class="sw tone-muted"></i>skipped</span></div>`, { sub: `Last ${recent.length} executions, oldest left. Click a column to open its run.` })}
     <div class="grid kpis">
       <div class="kpi"><div class="label">Executions</div><div class="value">${executions.length}</div></div>
@@ -600,22 +756,50 @@ async function renderTests() {
     ))}`;
 }
 
+/** Short column label: ticket number, or the suite name trimmed. */
+function execLabel(e) {
+  return e.suite ? e.ticketKey.slice(0, 4) : e.ticketKey.replace(/^[A-Z]+-/, '');
+}
+
 function summaryBar(s) {
   const t = Math.max(1, s.total);
   return html`<div class="bar" role="img" aria-label="${`${s.passed} passed, ${s.failed} failed, ${s.skipped} skipped`}" style="width:140px"><span class="p" style="width:${(s.passed / t) * 100}%"></span><span class="f" style="width:${(s.failed / t) * 100}%"></span><span class="s" style="width:${(s.skipped / t) * 100}%"></span></div>`;
 }
 
 async function renderDeployments() {
-  const { deployments, pipelines } = await api('/deployments');
-  return html`<div class="grid cards">${deployments.map((d) => html`<div class="panel"><div class="panel-head"><h2>${d.environment}</h2>${pill(d.status)}</div>
+  const [{ deployments, pipelines }, envs] = await Promise.all([api('/deployments'), api('/environments')]);
+  state.environments = envs;
+  const health = Object.fromEntries(deployments.map((d) => [d.environment, d]));
+  const varStatus = (v) => (v.missing.length ? html`<span class="pill err">missing ${v.missing.join(', ')}</span>` : !v.set ? html`<span class="pill">empty</span>` : '');
+  const varRow = (v) => html`<tr>
+    <td class="mono">${v.key}</td>
+    <td class="var-val">${v.secret
+      ? html`<span class="muted">${icon('shield', { size: 12, cls: 'inline' })}hidden${v.from.length ? html` · from <span class="mono">${v.from.join(', ')}</span>` : ''}</span>`
+      : html`<span class="mono">${v.value || '—'}</span>`} ${varStatus(v)}</td>
+  </tr>`;
+  const cards = envs.environments.map((e) => {
+    const d = health[e.name];
+    return html`<section class="panel env-card ${e.active ? 'active' : ''}">
+      <div class="panel-head">
+        <div class="row"><span class="env-ic">${icon('server', { size: 16 })}</span><div><h2>${e.name}</h2>${e.description ? html`<div class="sub">${e.description}</div>` : ''}</div></div>
+        <div class="row">${d ? pill(d.status) : ''}${e.active ? html`<span class="pill info">used by new runs</span>` : html`<button class="btn sm" data-action="use-env" data-env="${e.name}">Use for new runs</button>`}</div>
+      </div>
       <div class="panel-body stack small">
-        <div class="row between"><span class="muted">Version</span><span class="mono">${d.version}</span></div>
-        <div class="row between"><span class="muted">Commit</span><span class="mono">${d.commit || '—'}</span></div>
-        <div class="row between"><span class="muted">Latency</span><span>${d.latencyMs != null ? `${d.latencyMs} ms` : '—'}</span></div>
-        <div class="row between"><span class="muted">Deployed</span><span>${ago(d.deployedAt)}</span></div>
-        <div class="row between"><span class="muted">URL</span><span class="mono">${d.baseUrl || d.url || '—'}</span></div>
-        ${d.error ? html`<div class="err-text">${d.error}</div>` : ''}
-      </div></div>`)}</div>
+        <div class="row between"><span class="muted">URL</span><span class="mono">${e.baseUrl}</span></div>
+        ${d ? html`<div class="row between"><span class="muted">Version</span><span class="mono">${d.version}${d.latencyMs != null ? html` <span class="muted">· ${d.latencyMs} ms</span>` : ''}</span></div>` : ''}
+        ${d?.error ? html`<div class="err-text">${d.error}</div>` : ''}
+      </div>
+      ${e.variables.length
+        ? html`<div class="table-wrap"><table><thead><tr><th>Variable</th><th>Value</th></tr></thead><tbody>${e.variables.map(varRow)}</tbody></table></div>`
+        : html`<div class="panel-body small muted">No variables. Tests get <span class="mono">ORCA_ENV</span> and <span class="mono">BASE_URL</span>.</div>`}
+    </section>`;
+  });
+  const where = envs.source === 'file'
+    ? html`Defined in <span class="mono">${envs.file.split('/').pop()}</span>. Edit the file to add environments or variables; changes apply on the next run.`
+    : html`Only one environment, from <span class="mono">ORCA_TARGET_BASE_URL</span>. Copy <span class="mono">orca.environments.example.json</span> to <span class="mono">orca.environments.json</span> to declare dev, QA, staging and their variables.`;
+  return html`${envs.error ? html`<div class="error-box">${envs.error}</div>` : ''}
+    <p class="small muted page-note">${where} Secret values come from <span class="mono">\${VAR}</span> placeholders in <span class="mono">.env</span> and are never shown here. Tests read every variable with <span class="mono">env('NAME')</span>.</p>
+    <div class="grid envs">${cards}</div>
     ${panel('CI/CD pipelines', pipelines.length ? html`<div class="table-wrap"><table><thead><tr><th>Pipeline</th><th>Result</th><th class="hide-sm">Branch</th><th class="hide-sm">Commit</th><th>Message</th><th class="num">Duration</th><th>Started</th></tr></thead><tbody>
       ${pipelines.map((p) => html`<tr><td>${p.name}</td><td>${pill(p.conclusion || p.status)}</td><td class="hide-sm mono small">${p.branch}</td><td class="hide-sm mono small">${p.commit || '—'}</td><td class="ellipsis" title="${p.message || ''}">${p.message || ''}</td><td class="num">${p.durationSec != null ? dur(p.durationSec * 1000) : '—'}</td><td class="muted">${ago(p.startedAt)}</td></tr>`)}
     </tbody></table></div>` : empty('No pipelines.'), { flush: true, sub: 'monitored by the Deployment & Monitoring Agent' })}`;
@@ -722,7 +906,24 @@ async function renderReports(params) {
 
 // ------------------------------------------------------------------ start
 document.querySelectorAll('#nav a').forEach((a) => a.insertAdjacentHTML('afterbegin', String(icon(NAV_ICON[a.dataset.route] || 'overview'))));
+
+// Theme: dark by default, the choice is remembered per browser.
+const themeBtn = document.getElementById('theme-toggle');
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const next = theme === 'dark' ? 'light' : 'dark';
+  themeBtn.innerHTML = String(icon(theme === 'dark' ? 'sun' : 'moon'));
+  themeBtn.setAttribute('aria-label', `Switch to ${next} theme`);
+  themeBtn.title = `Switch to ${next} theme`;
+}
+applyTheme(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+themeBtn.addEventListener('click', () => {
+  const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  applyTheme(theme);
+  try { localStorage.setItem('orca-theme', theme); } catch {}
+});
 connectEvents();
+refreshEnvironments();
 refreshApprovalBadge();
 if (!location.hash) location.hash = '#/overview';
 else renderRoute();

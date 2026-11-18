@@ -30,6 +30,8 @@ export function loadConfig(overrides = {}) {
       data: path.resolve(ROOT_DIR, env.ORCA_DATA_DIR || 'data'),
       workspace: path.resolve(ROOT_DIR, env.ORCA_WORKSPACE_DIR || 'workspace'),
       fixtures: path.join(ROOT_DIR, 'fixtures'),
+      // The team's Playwright test library (hand-written tests + tests kept from tickets).
+      testLibrary: path.resolve(ROOT_DIR, env.ORCA_TEST_LIBRARY_DIR || 'qa-tests'),
       public: path.join(ROOT_DIR, 'public'),
     },
     llm: {
@@ -64,6 +66,8 @@ export function loadConfig(overrides = {}) {
     },
     target: {
       baseUrl: env.ORCA_TARGET_BASE_URL || 'http://127.0.0.1:4100',
+      // Test environments (dev, QA, staging…) with their own URL and variables. Optional.
+      environmentsFile: path.resolve(ROOT_DIR, env.ORCA_ENVIRONMENTS_FILE || 'orca.environments.json'),
       startDemoApp: bool(env.ORCA_START_DEMO_APP, true),
       demoAppPort: int(env.DEMO_APP_PORT, 4100),
     },

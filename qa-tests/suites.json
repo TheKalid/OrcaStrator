@@ -1,0 +1,7 @@
+{
+  "suites": [
+    { "name": "smoke", "tag": "@smoke", "description": "Fast checks that the application is up and its key pages and APIs respond. Run after every deployment." },
+    { "name": "regression", "tag": "@regression", "description": "Everything that already works and must keep working: hand-written tests plus the tests OrcaStrator generated for each ticket." },
+    { "name": "security", "tag": "@security", "description": "Access control and data exposure checks." }
+  ]
+}

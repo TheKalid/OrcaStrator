@@ -29,11 +29,14 @@ const PATHS = {
   plug: '<path d="M9 3.5V8M15 3.5V8M6.5 8h11v3a5.5 5.5 0 0 1-11 0zM12 16.5V20.5"/>',
   refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4v4.5H15"/>',
   clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  library: '<path d="M5 4.5h3.5v15H5zM10.5 4.5H14v15h-3.5z"/><path d="m15.6 5.4 3.3-.9 3.1 14.6-3.3.8z"/>',
+  sun: '<circle cx="12" cy="12" r="3.8"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/>',
+  moon: '<path d="M19.5 14.5A7.5 7.5 0 0 1 9.5 4.5a7.5 7.5 0 1 0 10 10Z"/>',
 };
 
 export function icon(name, { size = 16, cls = '' } = {}) {
   return raw(`<svg class="ic ${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PATHS[name] || ''}</svg>`);
 }
 
-export const NAV_ICON = { overview: 'overview', approvals: 'shield', jira: 'ticket', runs: 'play', reports: 'file', tests: 'flask', investigations: 'search', trace: 'trace', deployments: 'server' };
+export const NAV_ICON = { overview: 'overview', approvals: 'shield', jira: 'ticket', runs: 'play', reports: 'file', tests: 'flask', investigations: 'search', trace: 'trace', deployments: 'server', cases: 'library' };
 export const AGENT_ICON = { 'jira-monitor': 'ticket', requirement: 'analyze', 'test-generation': 'code', 'deployment-monitor': 'server', 'failure-analysis': 'pulse', reporting: 'chart' };

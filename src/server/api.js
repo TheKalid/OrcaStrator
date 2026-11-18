@@ -43,6 +43,7 @@ export function createApi(orca) {
         ci: orca.integrations.ci.mode,
         playwright: orca.integrations.playwright.mode,
         targetBaseUrl: orca.integrations.targetApp.baseUrl,
+        environment: orca.integrations.environments.active,
         mcpServers: orca.tools.list().length,
       },
       runs: {
@@ -76,15 +77,17 @@ export function createApi(orca) {
 
   app.post('/api/runs', wrap(async (req, res) => {
     const body = z.object({ workflowId: z.string().default('jira-to-qa-report'), input: z.record(z.string(), z.any()) }).parse(req.body);
+    // Reject an unknown suite before a run is created.
+    if (body.workflowId === 'test-suite' && !body.input.filter) await orca.integrations.testLibrary.grepFor(body.input.suite || 'all');
     const run = orca.startRun(body.workflowId, body.input, { trigger: 'api' });
     res.status(202).json({ id: run.id, status: run.status });
   }));
 
   /** Start the workflow for many tickets at once; the orchestrator runs them in parallel (bounded). */
   app.post('/api/runs/batch', wrap(async (req, res) => {
-    const body = z.object({ ticketKeys: z.array(z.string()).optional(), status: z.string().optional() }).parse(req.body || {});
+    const body = z.object({ ticketKeys: z.array(z.string()).optional(), status: z.string().optional(), environment: z.string().optional() }).parse(req.body || {});
     const keys = body.ticketKeys?.length ? body.ticketKeys : (await orca.integrations.jira.searchTickets({ statuses: [body.status || config.jira.triggerStatus] })).map((t) => t.key);
-    const runs = keys.map((ticketKey) => orca.startRun('jira-to-qa-report', { ticketKey }, { trigger: 'batch' }));
+    const runs = keys.map((ticketKey) => orca.startRun('jira-to-qa-report', { ticketKey, environment: body.environment }, { trigger: 'batch' }));
     res.status(202).json(runs.map((r) => ({ id: r.id, ticketKey: r.label })));
   }));
 
@@ -144,6 +147,55 @@ export function createApi(orca) {
       .map((r) => ({ runId: r.id, ...r.outputs['execute-tests'] }));
     res.json(executions);
   });
+
+  // ----------------------------------------------------------- test library
+  /** Catalog of the Playwright test library, with each test's latest result from suite runs. */
+  app.get('/api/test-library', wrap(async (_req, res) => {
+    const catalog = await orca.integrations.testLibrary.catalog();
+    const latest = new Map();
+    const suiteRuns = orca.store
+      .list('runs')
+      .filter((r) => r.workflowId === 'test-suite' && r.outputs?.['execute-tests'])
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    for (const r of suiteRuns) {
+      for (const t of r.outputs['execute-tests'].results) {
+        const key = `${t.file}::${t.title}`;
+        if (!latest.has(key)) latest.set(key, { status: t.status, at: r.outputs['execute-tests'].finishedAt, runId: r.id, error: t.error?.message?.split('\n')[0] || null });
+      }
+    }
+    const lastSuiteRun = (name) => {
+      const r = suiteRuns.find((x) => x.input?.suite === name && !x.input?.filter);
+      return r ? { runId: r.id, at: r.outputs['execute-tests'].finishedAt, environment: r.input.environment, summary: r.outputs['execute-tests'].summary } : null;
+    };
+    res.json({
+      ...catalog,
+      dir: path.relative(config.paths.root, catalog.dir) || '.',
+      suites: [{ name: 'all', tag: null, description: 'Every test in the library', count: catalog.tests.length }, ...catalog.suites].map((s) => ({ ...s, lastRun: lastSuiteRun(s.name) })),
+      tests: catalog.tests.map((t) => ({ ...t, last: latest.get(`${t.file}::${t.title}`) || null })),
+    });
+  }));
+
+  app.get('/api/test-library/source', (req, res) => {
+    const file = String(req.query.file || '');
+    if (!/\.spec\.(mjs|js|ts)$/.test(file)) return res.status(400).json({ error: 'Not a spec file' });
+    try {
+      res.type('text/plain').send(orca.integrations.testLibrary.read(file));
+    } catch (err) {
+      res.status(err.status || 404).json({ error: err.status ? err.message : 'File not found' });
+    }
+  });
+
+  // ------------------------------------------------------------ environments
+  /** Environments with masked variables. Secret values never leave the server. */
+  app.get('/api/environments', (_req, res) => res.json(orca.integrations.environments.describe()));
+
+  app.put('/api/environments/active', wrap(async (req, res) => {
+    const { name } = z.object({ name: z.string() }).parse(req.body || {});
+    orca.integrations.environments.setActive(name);
+    orca.bus.publish('environment.changed', { name });
+    orca.logger.info(`Active test environment set to ${name}`);
+    res.json(orca.integrations.environments.describe());
+  }));
 
   app.get('/api/deployments', wrap(async (_req, res) => {
     const [deployments, pipelines] = await Promise.all([orca.integrations.ci.listDeployments(), orca.integrations.ci.listPipelines({ limit: 20 })]);

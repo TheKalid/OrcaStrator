@@ -1,0 +1,32 @@
+{
+  "default": "local",
+  "environments": {
+    "local": {
+      "baseUrl": "http://127.0.0.1:4100",
+      "description": "Demo shop started by OrcaStrator",
+      "variables": {
+        "TEST_USER_EMAIL": "demo@orca.dev",
+        "TEST_USER_PASSWORD": "${LOCAL_TEST_USER_PASSWORD}",
+        "FEATURE_NEW_CHECKOUT": "off"
+      }
+    },
+    "qa": {
+      "baseUrl": "https://qa.example.com",
+      "description": "QA team environment",
+      "variables": {
+        "TEST_USER_EMAIL": "qa-bot@example.com",
+        "TEST_USER_PASSWORD": "${QA_TEST_USER_PASSWORD}",
+        "API_TOKEN": "${QA_API_TOKEN}"
+      }
+    },
+    "staging": {
+      "baseUrl": "https://staging.example.com",
+      "description": "Pre-release, mirrors production",
+      "variables": {
+        "TEST_USER_EMAIL": "qa-bot@example.com",
+        "TEST_USER_PASSWORD": "${STAGING_TEST_USER_PASSWORD}",
+        "FEATURE_NEW_CHECKOUT": "on"
+      }
+    }
+  }
+}

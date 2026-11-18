@@ -145,6 +145,8 @@ export const TestCaseResult = z.object({
 export const ExecutionResult = z.object({
   executionId: z.string(),
   ticketKey: z.string(),
+  /** Set when a library suite (e.g. "smoke") was run instead of a ticket's tests. */
+  suite: z.string().optional(),
   environment: z.string(),
   baseUrl: z.string(),
   startedAt: z.string(),

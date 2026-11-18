@@ -65,7 +65,7 @@ export function renderDag(workflow, run) {
       if (n.kind === 'terminal') {
         const st = n.id === '__end' && run ? (run.status === 'succeeded' ? 'succeeded' : run.status === 'failed' ? 'failed' : 'terminal') : n.id === '__start' && run ? 'succeeded' : 'terminal';
         const [stroke, fill] = COLORS[st];
-        return `<g class="node"><rect x="${p.x}" y="${p.y + H / 2 - 16}" width="${p.w}" height="32" rx="16" fill="${fill}" stroke="${stroke}"/><text class="t1" x="${p.x + p.w / 2}" y="${p.y + H / 2 + 4}" text-anchor="middle">${esc(n.name)}</text></g>`;
+        return `<g class="node"><rect x="${p.x}" y="${p.y + H / 2 - 16}" width="${p.w}" height="32" rx="8" fill="${fill}" stroke="${stroke}"/><text class="t1" x="${p.x + p.w / 2}" y="${p.y + H / 2 + 4}" text-anchor="middle">${esc(n.name)}</text></g>`;
       }
       const step = stepOf(n.id);
       const status = step?.status || 'pending';

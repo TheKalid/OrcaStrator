@@ -61,6 +61,10 @@ npm test
 
 In the dashboard, "Simulate Jira activity" moves SHOP-105 to *Ready for QA* so you can watch the Jira Monitoring Agent pick up the change.
 
+## Test library and suites
+
+`qa-tests/` holds the team's Playwright tests: hand-written specs (a smoke suite and an access-control suite ship as examples) plus the tests OrcaStrator keeps from every ticket in `qa-tests/tickets/<KEY>/`. Tags group them into suites (`@smoke`, `@regression`, `@security`…), described in `qa-tests/suites.json`. The console's **Test cases** page lists every test with its latest result and runs a whole suite or a single test against the selected environment. See [qa-tests/README.md](qa-tests/README.md).
+
 ## Agents
 
 | Agent | Responsibility |
@@ -80,6 +84,8 @@ Copy `.env.example` to `.env` and set what you need. Without these settings ever
   Optionally `JIRA_AC_FIELD` if acceptance criteria live in a custom field, and `JIRA_AUTO_TRIGGER=true` to start the QA workflow when a ticket reaches `JIRA_TRIGGER_STATUS`.
 - **LLM**: `ORCA_LLM_PROVIDER=anthropic` plus `ANTHROPIC_API_KEY`. Agents switch from heuristics to Claude and fall back to the heuristics if a call fails.
 - **Application under test**: `ORCA_TARGET_BASE_URL` and `ORCA_START_DEMO_APP=false`.
+- **Test environments**: copy `orca.environments.example.json` to `orca.environments.json` and declare each environment (dev, QA, staging…) with its base URL and variables. Secrets stay in `.env` and are referenced as `${NAME}`. Pick the environment in the console sidebar, or per run with `--env=<name>` in the CLI.
+- **Test library**: `ORCA_TEST_LIBRARY_DIR` points to the folder with your Playwright specs (default `qa-tests`).
 - **GitHub**: `GITHUB_TOKEN` and `GITHUB_REPO` make the code context come from your repo; `CI_USE_GITHUB_ACTIONS=true` reads pipelines from GitHub Actions.
 - **MCP tools**: copy `orca.mcp.example.json` to `orca.mcp.json` and declare servers. Agents call them via `ctx.tools`.
 

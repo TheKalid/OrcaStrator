@@ -42,6 +42,15 @@ The worker for a ticket drafts each bug with:
 
 The bug is created in Jira only after the QA engineer authorizes it. A rejected bug is not filed.
 
+### Test environments
+
+Every team has different environments (dev, QA, staging, UAT…), each with its own base URL and variables (test users, API tokens, feature flags).
+
+- Environments are declared in `orca.environments.json` in the user's repository; secrets are `${NAME}` placeholders resolved from `.env`, so the file can be committed.
+- The QA engineer picks the environment per run (for example `/orca SHOP-1 --env qa`); without it, the project's default is used.
+- Tests receive only the selected environment's variables (plus `ORCA_ENV` and `BASE_URL`) and read them with `env('NAME')`.
+- Implemented in the current runtime (`src/integrations/environments.js`), with a switcher in the console.
+
 ### Ticket sources
 
 Jira is optional. ORCA accepts:

@@ -5,15 +5,15 @@ import { newId } from '../core/util.js';
  *   listPipelines({ limit }) -> [{ id, name, branch, commit, status, conclusion, startedAt, durationSec, url }]
  *   listDeployments()        -> [{ environment, version, status, deployedAt, url }]
  */
-export function createCI(config, { store, targetApp }) {
-  return config.ci.mode === 'github-actions' ? new GitHubActionsCI(config.github) : new MockCI({ store, targetApp });
+export function createCI(config, { store, environments }) {
+  return config.ci.mode === 'github-actions' ? new GitHubActionsCI(config.github) : new MockCI({ store, environments });
 }
 
 export class MockCI {
   mode = 'mock';
-  constructor({ store, targetApp }) {
+  constructor({ store, environments }) {
     this.store = store;
-    this.targetApp = targetApp;
+    this.environments = environments;
     if (!this.store.list('ci_pipelines').length) this.#seed();
   }
   #seed() {
@@ -39,20 +39,23 @@ export class MockCI {
     return id;
   }
   async listDeployments() {
-    const health = await this.targetApp.health();
     const last = (await this.listPipelines()).find((p) => p.name.includes('deploy') && p.conclusion === 'success');
-    return [
-      {
-        environment: 'staging',
-        baseUrl: this.targetApp.baseUrl,
-        version: health.version || 'unknown',
-        commit: last?.commit || null,
-        status: health.ok ? 'healthy' : 'unhealthy',
-        latencyMs: health.latencyMs,
-        deployedAt: last?.startedAt || null,
-        error: health.error || null,
-      },
-    ];
+    return Promise.all(
+      this.environments.names().map(async (environment) => {
+        const target = this.environments.target(environment);
+        const health = await target.health();
+        return {
+          environment,
+          baseUrl: target.baseUrl,
+          version: health.version || 'unknown',
+          commit: health.ok ? last?.commit || null : null,
+          status: health.ok ? 'healthy' : 'unhealthy',
+          latencyMs: health.latencyMs,
+          deployedAt: health.ok ? last?.startedAt || null : null,
+          error: health.error || null,
+        };
+      }),
+    );
   }
 }
 

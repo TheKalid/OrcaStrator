@@ -12,7 +12,7 @@ export const jiraToQaReport = {
   id: 'jira-to-qa-report',
   name: 'Jira ticket → QA report',
   description: 'Analyzes a Jira ticket, generates and runs Playwright tests, investigates failures and produces a QA report.',
-  input: z.object({ ticketKey: z.string().regex(/^[A-Z][A-Z0-9]+-\d+$/, 'Expected a Jira key like SHOP-101'), environment: z.string().default('staging') }),
+  input: z.object({ ticketKey: z.string().regex(/^[A-Z][A-Z0-9]+-\d+$/, 'Expected a Jira key like SHOP-101'), environment: z.string().optional() }),
   label: (input) => input.ticketKey,
   steps: [
     {
@@ -53,7 +53,7 @@ export const jiraToQaReport = {
       action: 'generate',
       when: (ctx) => ctx.steps['analyze-requirements'].requirements.some((r) => r.testable),
       whenLabel: 'ticket has testable acceptance criteria',
-      input: (ctx) => ({ analysis: ctx.steps['analyze-requirements'], runId: ctx.run.id }),
+      input: (ctx) => ({ analysis: ctx.steps['analyze-requirements'], runId: ctx.run.id, environment: ctx.input.environment }),
       summarize: (g) => `${g.tests.length} tests · ${g.files.length} files · ${g.tests.reduce((n, t) => n + t.warnings.length, 0)} warnings`,
     },
     {

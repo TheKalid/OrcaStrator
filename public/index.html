@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,6 +7,10 @@
   <meta name="description" content="OrcaStrator – AI agent orchestrator for software testing">
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="color-scheme" content="dark light">
+  <script>try { const t = localStorage.getItem('orca-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}</script>
+  <link rel="preload" href="fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -14,8 +18,8 @@
     <aside class="sidebar" id="sidebar">
       <div class="brand">
         <picture class="logo">
-          <source srcset="logo-light.png" media="(prefers-color-scheme: dark)">
-          <img src="logo.png" alt="" width="30" height="41">
+          <img class="logo-on-light" src="logo.png" alt="" width="30" height="41">
+          <img class="logo-on-dark" src="logo-light.png" alt="" width="30" height="41">
         </picture>
         <div><strong>OrcaStrator</strong><small>QA agent orchestrator</small></div>
         <button class="icon-btn menu-close" id="menu-close" aria-label="Close menu"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
@@ -25,6 +29,7 @@
         <a href="#/approvals" data-route="approvals">Approvals <span class="badge" id="approval-badge" hidden>0</span></a>
         <a href="#/jira" data-route="jira">Jira tickets</a>
         <a href="#/runs" data-route="runs">Runs</a>
+        <a href="#/cases" data-route="cases">Test cases</a>
         <span class="nav-group">Results</span>
         <a href="#/reports" data-route="reports">QA reports</a>
         <a href="#/tests" data-route="tests">Test results</a>
@@ -33,8 +38,14 @@
         <span class="nav-group">System</span>
         <a href="#/deployments" data-route="deployments">Environments &amp; CI</a>
       </nav>
+      <div class="env-switch">
+        <label for="env-select">Test environment</label>
+        <select id="env-select" disabled><option>Loading…</option></select>
+        <span class="env-url" id="env-url"></span>
+      </div>
       <div class="sidebar-foot">
         <span class="conn" id="conn" data-state="connecting">connecting…</span>
+        <button class="icon-btn theme-toggle" id="theme-toggle" type="button" aria-label="Switch to light theme" title="Switch to light theme"></button>
       </div>
     </aside>
     <div class="main">

@@ -27,7 +27,9 @@ export class FailureAnalysisAgent extends BaseAgent {
       { input: z.object({ execution: ExecutionResult, generation: TestGenerationResult }), output: FailureAnalysisResult, description: 'Root-cause analysis of failed tests' },
       async ({ execution, generation }, ctx) => {
         const failures = execution.results.filter((r) => r.status === 'failed' || r.status === 'timedOut');
-        const logs = await ctx.integrations.targetApp.logs({ since: execution.startedAt });
+        const { environments } = ctx.integrations;
+        const target = environments.has(execution.environment) ? environments.target(execution.environment) : environments.target();
+        const logs = await target.logs({ since: execution.startedAt });
         const knownIds = (await ctx.integrations.codeContext.findTestIds().catch(() => [])).map((k) => k.id);
         const signatures = ctx.memory.global.get('failure.signatures', {});
 

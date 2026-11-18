@@ -3,13 +3,14 @@
  * CLI: run the MVP workflow headless.
  *   node src/cli.js run SHOP-102 [--approve|--reject]
  *   node src/cli.js run --all            # every "Ready for QA" ticket, in parallel
+ *   node src/cli.js run SHOP-101 --env=qa   # against a specific test environment
  */
 import { createOrca } from './app.js';
 import { startDemoApp } from '../demo-app/server.js';
 
 const [, , command, ...args] = process.argv;
 if (command !== 'run') {
-  console.log('Usage: node src/cli.js run <TICKET-KEY...>|--all [--approve|--reject]');
+  console.log('Usage: node src/cli.js run <TICKET-KEY...>|--all [--env=<name>] [--approve|--reject]');
   process.exit(1);
 }
 const decision = args.includes('--approve') ? true : args.includes('--reject') ? false : null;
@@ -31,7 +32,8 @@ if (!keys.length) {
   process.exit(1);
 }
 
-const runs = keys.map((ticketKey) => orca.startRun('jira-to-qa-report', { ticketKey }, { trigger: 'cli' }));
+const environment = args.find((a) => a.startsWith('--env='))?.slice(6) || undefined;
+const runs = keys.map((ticketKey) => orca.startRun('jira-to-qa-report', { ticketKey, environment }, { trigger: 'cli' }));
 const finished = await Promise.all(runs.map((r) => r.done));
 console.log('\n================ RESULTS ================');
 for (const run of finished) {

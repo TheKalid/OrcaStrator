@@ -13,6 +13,7 @@ import { createIntegrations } from './integrations/index.js';
 import { McpToolHub } from './integrations/mcp.js';
 import { createDefaultAgents } from './agents/index.js';
 import { jiraToQaReport } from './workflows/jira-to-qa-report.js';
+import { testSuite } from './workflows/test-suite.js';
 
 /** Composition root: wires every component together. */
 export async function createOrca(overrides = {}) {
@@ -45,6 +46,7 @@ export async function createOrca(overrides = {}) {
   });
   for (const agent of createDefaultAgents()) await orchestrator.registerAgent(agent);
   orchestrator.registerWorkflow(jiraToQaReport);
+  orchestrator.registerWorkflow(testSuite);
   return orchestrator;
 }
 

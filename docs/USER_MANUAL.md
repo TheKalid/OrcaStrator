@@ -34,12 +34,20 @@ ORCA also starts a demo store, **ORCA Shop**, on http://127.0.0.1:4100. It is th
 
 > If the page looks unchanged after an update, do a hard reload: **Cmd + Shift + R** (Mac) or **Ctrl + Shift + R** (Windows/Linux).
 
+### Test environment
+
+The **Test environment** selector at the bottom of the left menu chooses where new QA runs execute (for example *dev*, *qa* or *staging*). Runs already in progress keep the environment they started with. Every run shows its environment in **Runs** and in the run detail.
+
 ### Connection indicator
 
 A dot in the bottom-left corner shows the connection state:
 
 - **green · live**: the console is receiving real-time events.
 - **red · reconnecting…**: the connection to the server was lost. Check that `npm start` is still running.
+
+### Dark and light theme
+
+The console opens in the dark theme. The sun/moon button next to the connection indicator switches between dark and light. Your choice is remembered in this browser.
 
 ---
 
@@ -158,6 +166,17 @@ Every run, newest first, with its outcome and reason. Below it is a diagram of *
 - **Input / output**: the run's input and output data.
 - Buttons in the top-right corner: **QA report**, **Traceability** and **Cancel run** (only while it is running).
 
+### Test cases
+
+Every Playwright test in the test library (`qa-tests/`): the tests you write by hand and the tests OrcaStrator keeps from each ticket, which join the **regression** suite automatically.
+
+- The cards at the top count the test cases, how many are automated, how many come from tickets and how many passed on their latest run.
+- **Suites** shows each suite (all, smoke, regression, security…) with its description, size and latest result. **Run smoke**, **Run regression** and so on run the whole suite against the environment selected in the sidebar.
+- **Test cases** lists every test with its tags, its ticket, its source file and its latest result. Filter by suite with the chips, or search by title, file or ticket. Click the file name to read the code, or **Run** to run just that test.
+- The list comes from Playwright itself (the same tests `npx playwright test --list` shows), so tests made in a loop, titles split across lines and tags inherited from a `describe` block all appear as Playwright runs them. If a spec file cannot be loaded (for example, a syntax error), the page says so in a yellow note and falls back to reading the sources, which can miss tests made in loops. Fix the file and reload.
+
+Suite runs appear under **Runs** (as *smoke suite*, *regression suite*…) and under **Results → Test results**.
+
 ### Results → QA reports
 
 The QA report of each run: verdict, pass rate, acceptance-criteria coverage, tests generated and automation gaps, followed by the full report. Switch runs with the selector in the top-right corner. The report is also saved to disk as a Markdown file; its path appears under the title.
@@ -181,7 +200,13 @@ Use it to answer questions such as "which criterion has no test?" or "which requ
 
 ### System → Environments & CI
 
-The state of each environment (version, commit, latency and health) and the latest CI/CD pipelines with their result.
+One card per test environment with:
+
+- its URL, health, version and latency;
+- its variables. Secret values are never shown: you see *hidden · from QA_API_TOKEN* and a red **missing** tag if that value is not set in `.env`;
+- **Use for new runs**, to make it the active environment.
+
+Below them are the latest CI/CD pipelines with their result.
 
 ---
 
@@ -198,6 +223,19 @@ The state of each environment (version, commit, latency and health) and the late
 1. On **Overview**, click **Test all “Ready for QA” tickets**.
 2. Follow progress on the ticket board.
 3. Handle whatever shows up under **Needs your action**.
+
+### Run the smoke or regression suite
+
+1. Pick the environment in the sidebar (for example *staging* after a deployment).
+2. Go to **Test cases** and click **Run smoke** (or **Run** on any suite card).
+3. When the run finishes, the suite card shows how many tests passed; failures are marked in the test list.
+
+### Add a test case
+
+1. Create a `*.spec.mjs` file in `qa-tests/` (or add a test to an existing one).
+2. Tag it so it joins a suite: `test.describe('Checkout', { tag: ['@regression', '@smoke'] }, () => { … })`, or put the tag in the title: `test('cart loads @smoke', …)`.
+3. Read environment values with `process.env.NAME` (for example `TEST_USER_EMAIL` from `orca.environments.json`).
+4. Reload **Test cases**: the new test appears right away, no restart needed. To create a new suite, add it to `qa-tests/suites.json`.
 
 ### Review and file a defect
 
@@ -229,6 +267,12 @@ node src/cli.js run --all --approve
 
 Use `--reject` instead of `--approve` to reject them. If you pass neither, the CLI rejects defects to be safe.
 
+Against a specific environment instead of the active one:
+
+```bash
+node src/cli.js run SHOP-101 --env=qa
+```
+
 ---
 
 ## 6. Demo scenarios
@@ -256,9 +300,40 @@ Copy `.env.example` to `.env` and set only what you need; with no settings, ever
 | **Jira Cloud** | `JIRA_MODE=cloud`, `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`. Optional: `JIRA_AC_FIELD` if acceptance criteria live in a custom field, and `JIRA_AUTO_TRIGGER=true` to start QA when a ticket reaches `JIRA_TRIGGER_STATUS`. |
 | **AI model** | `ORCA_LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. Without them the agents use their own rules (*Connections* shows *LLM off (rule-based agents)*). |
 | **Application under test** | `ORCA_TARGET_BASE_URL` and `ORCA_START_DEMO_APP=false`. |
+| **Several test environments** | See [Test environments](#test-environments) below. |
 | **GitHub** | `GITHUB_TOKEN` and `GITHUB_REPO` to read code from your repository; `CI_USE_GITHUB_ACTIONS=true` to read pipelines from GitHub Actions. |
 | **MCP tools** | Copy `orca.mcp.example.json` to `orca.mcp.json` and declare the servers. |
 | **Protect the console** | `ORCA_API_TOKEN` requires a token on every API call. |
+
+### Test environments
+
+Each team has its own environments, and each environment has its own URL and variables (test users, API tokens, feature flags). Declare them in `orca.environments.json` at the project root:
+
+```json
+{
+  "default": "qa",
+  "environments": {
+    "qa": {
+      "baseUrl": "https://qa.example.com",
+      "description": "QA team environment",
+      "variables": {
+        "TEST_USER_EMAIL": "qa-bot@example.com",
+        "TEST_USER_PASSWORD": "${QA_TEST_USER_PASSWORD}"
+      }
+    },
+    "staging": {
+      "baseUrl": "https://staging.example.com",
+      "variables": { "TEST_USER_EMAIL": "qa-bot@example.com" }
+    }
+  }
+}
+```
+
+- `orca.environments.example.json` is a starting point: copy it and edit it.
+- Write secrets as `${NAME}` placeholders and put the real values in `.env` (`QA_TEST_USER_PASSWORD=...`). The file can then be committed safely.
+- Generated tests receive the variables of the environment they run against, plus `ORCA_ENV` and `BASE_URL`, and read them with `env('NAME')`. OrcaStrator's own keys (Jira, LLM, GitHub) never reach the tests.
+- Changes to the file apply on the next run; no restart needed.
+- Without the file, OrcaStrator uses a single *staging* environment at `ORCA_TARGET_BASE_URL`.
 
 ---
 
@@ -273,4 +348,6 @@ Copy `.env.example` to `.env` and set only what you need; with no settings, ever
 | *Run crashed* | A technical error during the run. | Open the run and check **Logs**. |
 | Every test fails with *environment problem* | The application under test isn't responding. | Check **Environments & CI** and the configured URL. |
 | No tests are generated | The ticket has no clear acceptance criteria. | Add criteria in Jira and run QA again. |
+| A variable shows **missing** | Its `${NAME}` placeholder has no value in `.env`. | Add `NAME=...` to `.env` and restart OrcaStrator. |
+| The environment selector is greyed out | Only one environment is declared. | Create `orca.environments.json` (see *Test environments*). |
 | *Activity* is empty | The feed only shows what happened since you opened the page. | Start a run, or check the history under **Runs**. |

@@ -158,6 +158,12 @@ export class Orchestrator {
   startRun(workflowId, input = {}, { trigger = 'manual', label } = {}) {
     const def = this.workflows.get(workflowId);
     if (!def) throw Object.assign(new Error(`Workflow "${workflowId}" not found`), { status: 404 });
+    // Workflows that take an environment run against the active one unless told otherwise.
+    const envs = this.integrations?.environments;
+    if (envs && def.input?.shape?.environment) {
+      input = { ...input, environment: input.environment || envs.active };
+      envs.assert(input.environment);
+    }
     const parsedInput = def.input ? def.input.parse(input) : input;
     const run = {
       id: newId('run'),

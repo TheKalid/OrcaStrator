@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { z } from 'zod';
 import { BaseAgent } from '../core/agent.js';
 import { TestGenerationResult, ExecutionResult } from '../core/contracts.js';
@@ -29,8 +30,10 @@ export class DeploymentMonitorAgent extends BaseAgent {
       concurrency: 2,
     });
 
-    this.action('checkHealth', { input: z.object({ environment: z.string().default('staging') }), output: HealthReport, description: 'Environment and pipeline health' }, async ({ environment }, ctx) => {
-      const { targetApp, ci } = ctx.integrations;
+    this.action('checkHealth', { input: z.object({ environment: z.string().optional() }), output: HealthReport, description: 'Environment and pipeline health' }, async (input, ctx) => {
+      const { environments, ci } = ctx.integrations;
+      const environment = input.environment || environments.active;
+      const targetApp = environments.target(environment);
       const [health, pipelines] = await Promise.all([targetApp.health(), ci.listPipelines({ limit: 5 }).catch(() => [])]);
       const report = {
         environment,
@@ -49,55 +52,93 @@ export class DeploymentMonitorAgent extends BaseAgent {
 
     this.action(
       'runTests',
-      { input: z.object({ generation: TestGenerationResult, environment: z.string().default('staging') }), output: ExecutionResult, description: 'Execute a generated suite with Playwright' },
-      async ({ generation, environment }, ctx) => {
-        const { playwright, targetApp, ci } = ctx.integrations;
+      { input: z.object({ generation: TestGenerationResult, environment: z.string().optional() }), output: ExecutionResult, description: 'Execute a generated suite with Playwright' },
+      ({ generation, environment }, ctx) =>
+        execute(ctx, { ticketKey: generation.ticketKey, suiteDir: generation.suiteDir, environment, count: `${generation.tests.length} test(s)`, pipeline: { name: `orca / qa-${generation.ticketKey}`, message: `ORCA acceptance tests for ${generation.ticketKey}` } }),
+    );
+
+    this.action(
+      'runSuite',
+      {
+        input: z.object({ suite: z.string().default('all'), filter: z.string().optional(), environment: z.string().optional() }),
+        output: ExecutionResult,
+        description: 'Run a suite (smoke, regression…) or a single test from the test library',
+      },
+      async ({ suite, filter, environment }, ctx) => {
+        const { testLibrary, playwright } = ctx.integrations;
+        const grep = filter ? null : await testLibrary.grepFor(suite);
+        if (filter) testLibrary.resolve(filter.replace(/:\d+$/, ''));
+        const label = filter ? filter : suite === 'all' ? 'all tests' : `${suite} suite`;
         const executionId = newId('exec');
-        ctx.log.info(`Running ${generation.tests.length} test(s) with ${playwright.mode} against ${targetApp.baseUrl}`);
-        const run = await playwright.run({ suiteDir: generation.suiteDir, baseUrl: targetApp.baseUrl, signal: ctx.signal, log: ctx.log });
-
-        const summary = { total: run.results.length, passed: 0, failed: 0, skipped: 0, flaky: 0 };
-        const history = ctx.memory.global.get('test.history', {});
-        for (const r of run.results) {
-          if (r.status === 'passed') summary.passed++;
-          else if (r.status === 'skipped') summary.skipped++;
-          else summary.failed++;
-          const h = (history[r.testId] = [...(history[r.testId] || []), r.status].slice(-10));
-          if (h.includes('passed') && h.some((s) => s === 'failed' || s === 'timedOut')) summary.flaky++;
-        }
-        ctx.memory.global.set('test.history', history);
-
-        const execution = {
+        return execute(ctx, {
           executionId,
-          ticketKey: generation.ticketKey,
+          ticketKey: filter ? filter.split('/').pop().replace(/\.spec\.\w+(:\d+)?$/, '') : suite === 'all' ? 'all' : suite,
+          suite: filter ? 'single' : suite,
+          suiteDir: testLibrary.dir,
+          outDir: path.join(ctx.config.paths.workspace, 'suites', executionId),
+          grep,
+          filter,
           environment,
-          baseUrl: targetApp.baseUrl,
-          startedAt: run.startedAt,
-          finishedAt: run.finishedAt,
-          durationMs: Date.parse(run.finishedAt) - Date.parse(run.startedAt),
-          mode: run.mode,
-          summary,
-          results: run.results,
-          rawReportPath: run.rawReportPath,
-        };
-        ctx.memory.run.set('execution', execution);
-        ctx.trace(
-          run.results.map((r) => ({ id: `exec:${executionId}:${r.testId}`, type: 'execution', label: `${r.testId} ${r.status}`, data: { status: r.status, durationMs: r.durationMs, executionId, at: run.finishedAt, error: r.error?.message?.split('\n')[0] } })),
-          run.results.map((r) => ({ from: `test:${r.testId}`, to: `exec:${executionId}:${r.testId}`, rel: 'executed_as' })),
-        );
-        await ci.recordPipeline?.({
-          name: `orca / qa-${generation.ticketKey}`,
-          branch: 'main',
-          commit: null,
-          message: `ORCA acceptance tests for ${generation.ticketKey}`,
-          status: 'completed',
-          conclusion: summary.failed ? 'failure' : 'success',
-          startedAt: run.startedAt,
-          durationSec: Math.round(execution.durationMs / 1000),
+          count: `${label}${grep ? ` (--grep ${grep})` : ''}`,
+          pipeline: { name: `orca / ${filter ? 'test' : suite}`, message: `OrcaStrator ${label}` },
+          playwright,
         });
-        ctx.log.info(`Execution ${executionId}: ${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped`);
-        return execution;
       },
     );
   }
+}
+
+/** Runs Playwright, keeps flakiness history, records traceability and the CI pipeline. */
+async function execute(ctx, { executionId = newId('exec'), ticketKey, suite, suiteDir, outDir, grep, filter, environment: env, count, pipeline }) {
+  const { playwright, environments, ci } = ctx.integrations;
+  const environment = env || environments.active;
+  const targetApp = environments.target(environment);
+  const variables = environments.variables(environment);
+  ctx.log.info(`Running ${count} with ${playwright.mode} against ${environment} (${targetApp.baseUrl}) with ${Object.keys(variables).length} environment variable(s)`);
+  const run = await playwright.run({ suiteDir, outDir, grep, filter, baseUrl: targetApp.baseUrl, variables, signal: ctx.signal, log: ctx.log });
+
+  const summary = { total: run.results.length, passed: 0, failed: 0, skipped: 0, flaky: 0 };
+  const history = ctx.memory.global.get('test.history', {});
+  for (const r of run.results) {
+    if (r.status === 'passed') summary.passed++;
+    else if (r.status === 'skipped') summary.skipped++;
+    else summary.failed++;
+    const h = (history[r.testId] = [...(history[r.testId] || []), r.status].slice(-10));
+    if (h.includes('passed') && h.some((s) => s === 'failed' || s === 'timedOut')) summary.flaky++;
+  }
+  ctx.memory.global.set('test.history', history);
+
+  const execution = {
+    executionId,
+    ticketKey,
+    ...(suite ? { suite } : {}),
+    environment,
+    baseUrl: targetApp.baseUrl,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    durationMs: Date.parse(run.finishedAt) - Date.parse(run.startedAt),
+    mode: run.mode,
+    summary,
+    results: run.results,
+    rawReportPath: run.rawReportPath,
+  };
+  ctx.memory.run.set('execution', execution);
+  if (!suite) {
+    ctx.trace(
+      run.results.map((r) => ({ id: `exec:${executionId}:${r.testId}`, type: 'execution', label: `${r.testId} ${r.status}`, data: { status: r.status, durationMs: r.durationMs, executionId, at: run.finishedAt, error: r.error?.message?.split('\n')[0] } })),
+      run.results.map((r) => ({ from: `test:${r.testId}`, to: `exec:${executionId}:${r.testId}`, rel: 'executed_as' })),
+    );
+  }
+  await ci.recordPipeline?.({
+    name: pipeline.name,
+    branch: 'main',
+    commit: null,
+    message: pipeline.message,
+    status: 'completed',
+    conclusion: summary.failed ? 'failure' : 'success',
+    startedAt: run.startedAt,
+    durationSec: Math.round(execution.durationMs / 1000),
+  });
+  ctx.log.info(`Execution ${executionId}: ${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped`);
+  return execution;
 }

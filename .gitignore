@@ -4,3 +4,4 @@ workspace/
 .env
 .DS_Store
 test-results/
+.impeccable/hook.cache.json
